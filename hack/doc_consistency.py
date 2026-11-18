@@ -6,11 +6,13 @@
 都是同步滞后，不是造假——但一个主打"文档即唯一可信账本"的项目，账本自己
 对不上就是硬伤。人工核对靠不住（上次就是脚本替换漏了一处），所以做成门。
 
-检查两类：
+检查四类：
 1. 数字：所有"当前时态"的用例数必须等于徽章数字。
    历史流水账（形如 "103 → 113 用例"）豁免——记录演进是正当的。
 2. 现实：仓库里已经存在的东西，文档里不能还说"计划中/未做"。
    这类断言写死映射，改代码时若文档没跟上，CI 直接红。
+3. 归档：报告 §3 的表里说"未归档"就不能挂链接，说有归档就必须点得开。
+4. 日期：STATUS 顶部的"最后更新"不能早于台账里最晚的一条记录。
 """
 
 import pathlib
@@ -140,10 +142,37 @@ if BENCH_DOC.exists():
         if not target.exists():
             errors.append(f"{rel(BENCH_DOC)}:{i} {run} 归档链接指向不存在的文件：{m.group(1)}")
 
+# ---------- 4. 账本顶部的"最后更新"不能早于台账 ----------
+# 起因（2026-11-18 AI 对抗性自审）：STATUS 顶部写"最后更新：2026-11-04 晚"，
+# 台账里却已有 11-05 傍晚的记录。日期是给人判断"这份账本新鲜度"的最快信号，
+# 贴错了比没有更糟——读者会以为 11-05 之后的记录都不存在。
+
+STATUS_DOC = ROOT / "docs/STATUS.md"
+UPDATED = re.compile(r"最后更新：(\d{4}-\d{2}-\d{2})")
+LEDGER_ROW = re.compile(r"^\|\s*(\d{4}-\d{2}-\d{2})")
+
+if STATUS_DOC.exists():
+    text = STATUS_DOC.read_text(encoding="utf-8")
+    m = UPDATED.search(text)
+    if not m:
+        errors.append("docs/STATUS.md 顶部找不到「最后更新：YYYY-MM-DD」")
+    else:
+        header_date = m.group(1)
+        ledger_dates = []
+        for line in text.splitlines():
+            row = LEDGER_ROW.match(line.strip())
+            if row:
+                ledger_dates.append(row.group(1))
+        if ledger_dates and max(ledger_dates) > header_date:
+            errors.append(
+                f"docs/STATUS.md 顶部写「最后更新：{header_date}」，"
+                f"但台账里已有 {max(ledger_dates)} 的记录"
+            )
+
 if errors:
     print("文档一致性检查失败：")
     for e in errors:
         print("  -", e)
     sys.exit(1)
 
-print(f"文档一致：用例数 {badge}（{len(claims)} 处声明），现实断言 {len(REALITY)} 条")
+print(f"文档一致：用例数 {badge}（{len(claims)} 处声明），现实断言 {len(REALITY)} 条，台账日期单调，归档链接可点")

@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 设计或用法讨论
+    url: https://github.com/weirong-ui/kubestasis/discussions
+    about: 不适合当 issue 的问题（选型、为什么这样做、想拿它练手）放这里
