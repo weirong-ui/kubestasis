@@ -26,10 +26,12 @@
 | `TTFT` | `vllm:time_to_first_token_seconds_bucket` | `"1s"`（支持 `200ms` / `0.2` / `1s`） |
 | `KVCacheUsage` | `vllm:gpu_cache_usage_perc` | `"0.85"`（必须落在 (0,1)） |
 
-不同 vLLM 版本（尤其 V1 引擎）会改名或移除指标。开工第一步是
-`curl -s localhost:8000/metrics | grep -E '^vllm:' | head -30`，把真实名字抄进 §7。
+不同 vLLM 版本（尤其 V1 引擎）会改名或移除指标，CPU 后端还会多一条
+`vllm:cpu_cache_usage_perc`（GPU 之外的 KV cache），不一定上报 `gpu_cache_usage_perc`。
+开工第一步是 `curl -s localhost:8000/metrics | grep -E '^vllm:' | head -30`，把真实名字抄进 §7。
 名字不一致时**用 recording rule 做别名**（§3.3 附），不要改 Go 源码默认值去迁就一套私有名字——
-源码注释第 35 行写明了默认值不该为某个环境让路。
+源码注释第 35 行写明了默认值不该为某个环境让路。CPU 后端缺哪条就如实写"未触发"，
+不许把 `cpu_cache_usage_perc` 硬凑成 GPU 那条来宣布三信号全通。
 
 ### 0.2 label 对齐：不满足会静默失败，比报错难查
 
@@ -53,6 +55,10 @@ CRD 的 `MetricTarget` 只有 `Type` / `Target`，**没有 PromQL 覆盖字段**
 别用 30 秒的脉冲流量。`QueueDepth` 是 `sum()` 不带 rate，不受这条影响。
 
 ## 1. 环境与分工
+
+下表是**主线 A（租 GPU 机）**的布局。不花钱的**零成本 C（本机 CPU 版 vLLM）**见 §6，
+那种情况下 vLLM / Prometheus / loadgen 全在本机，不需要 GPU 机和 SSH 隧道，§2 自检 A
+与 §3.4 整段跳过。两档共用 §0、§3.2 的 label 规则、§3.5 之后的 controller 与 App 配置。
 
 | 组件 | 跑在哪 | 说明 |
 |---|---|---|
@@ -239,12 +245,53 @@ manager 是 `go run` 时日志就在它的终端里，直接从那里拷 Reason 
 | 只跑了部分信号 | 只写跑通的那几条，其余留空并注明 |
 | 只跑一次 | 不做统计推断、不写"显著"、不进 D2 判定线 |
 
-## 6. 成本与止损
+## 6. 成本：三档，可以一分钱不花
 
-租机 2–3 小时 + 写文档 1 小时，约 20–50 元。公网别直接暴露 9090，用 §3.4 的隧道。
+先说清楚钱花在哪：这个实验要验的是"三条 PromQL 在真指标上能否驱动副本变更"，
+**KubeStasis 从头到尾只发 HTTP GET 到 Prometheus，不碰 GPU**。GPU 的作用只是让
+vLLM 快一点、让 `gpu_cache_usage_perc` 这个名字名副其实。所以 GPU 不是必需项。
+
+| 档 | 花销 | 做法 | 能写进结论的措辞 | 代价 |
+|---|---|---|---|---|
+| 主线 A：租 GPU 机 | 20–50 元 / 2–3 小时 | §1–§3 原样 | "在单卡 GPU 的真实 vLLM 上" | 要账号本人租机与释放；公网别直接暴露 9090，走 §3.4 隧道 |
+| **零成本 C：本机 CPU 版 vLLM** | **0 元** | 见下 | **"在真实 vLLM（CPU 后端）上，三信号中 N 条触发了决策"** | 见下，口径要多一层限定，但仍是真 vLLM、真 `/metrics`、真推理 |
+| 免费 GPU：Kaggle / Colab | 0 元，但要注册 | 免费 T4 notebook | 不建议 | 会话 9–12 小时会断、环境每次重置、不能常驻开放端口给本地 controller 连；SSH 隧道那条路直接断了 |
+
+### 零成本 C 怎么跑
+
+本机已核过：没有 GPU（`nvidia-smi` 不存在），16 核 CPU，19.8 GiB 内存，
+Docker Desktop 分到约 9.6 GiB、当前空闲约 5 GiB，Kubernetes 是 docker-desktop v1.36.1。
+vLLM 有官方 CPU 镜像，不用编译：
+
+```bash
+docker run -d --name vllm-cpu -p 8000:8000 --shm-size 2g \
+  -e VLLM_CPU_KVCACHE_SPACE=2 -e VLLM_CPU_OMP_THREADS_BIND=0-7 \
+  vllm/vllm-openai-cpu:latest-x86_64 \
+  --model Qwen/Qwen2.5-1.5B-Instruct --host 0.0.0.0 --port 8000 \
+  --dtype bfloat16 --max-model-len 2048 --max-num-seqs 8 --enforce-eager
+```
+
+Prometheus 同样在本机用 docker 起，target 写 `host.docker.internal:8000`（Windows
+Docker Desktop 自带这个 hostname），§3.2 的 `app` / `namespace` label 照样要补。
+manager 直连 `127.0.0.1:9090`，**不需要 SSH 隧道、不需要第二台机器**，§2 的自检 A
+和 §3.4 整段跳过。这也是唯一一条我能在本机全程代跑、且你不用开任何账号的路。
+
+四个如实写下的限制：
+
+1. 镜像解压后约 5.4 GiB，加上模型权重和 KV cache，本机 5 GiB 空闲内存会很紧；
+   起容器前关掉不用的东西，`VLLM_CPU_KVCACHE_SPACE` 从 2 起、不够再调小。
+2. CPU 推理慢，TTFT 会天然偏高，`"1s"` 阈值很容易越过——这算真触发，但要在
+   报告里注明是 CPU 后端，别把慢当成"负载压力大"。
+3. CPU 后端可能只上报 `vllm:cpu_cache_usage_perc` 而不报 `gpu_cache_usage_perc`
+   （§0.1）。缺就写"KVCacheUsage 未触发"，不许用别名硬凑成三条全通。
+4. 结论不能写"GPU 集群"或"AI 推理弹性已在真集群端到端验证"——后一句本来就被
+   首屏口径声明挡掉了（扩出来的副本不承接流量）。
+
+### 止损，三档通用
+
 **单卡 24G 上 KV cache 占用率未必能推到 0.85**——1.5B 模型配 2048 上下文，KV 池很大。
-如果它始终不越阈值，就如实写"KVCacheUsage 未触发"，不要为了凑齐三信号把目标值改到 0.1。
-三条里能坐实两条，也比编一条强。
+CPU 档则相反，`VLLM_CPU_KVCACHE_SPACE=2` 时更容易打满。无论哪档，它不越阈值就如实写
+"KVCacheUsage 未触发"，不要为了凑齐三信号把目标值改到 0.1。三条里能坐实两条，也比编一条强。
 
 ## 7. 收数表（跑完填 `vllm-inference.csv`）
 
