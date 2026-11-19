@@ -56,43 +56,78 @@ CRD 的 `MetricTarget` 只有 `Type` / `Target`，**没有 PromQL 覆盖字段**
 
 ## 1. 环境与分工
 
-下表是**主线 A（租 GPU 机）**的布局。不花钱的**零成本 C（本机 CPU 版 vLLM）**见 §6，
-那种情况下 vLLM / Prometheus / loadgen 全在本机，不需要 GPU 机和 SSH 隧道，§2 自检 A
+下表是**主线 A（腾讯云 CVM 按量付费 GPU 实例）**的布局。不花钱的**零成本 C（本机 CPU 版 vLLM）**见 §6，
+那种情况下 vLLM / Prometheus / loadgen 全在本机，不需要 CVM 和 SSH 隧道，§2 自检 A
 与 §3.4 整段跳过。两档共用 §0、§3.2 的 label 规则、§3.5 之后的 controller 与 App 配置。
 
 | 组件 | 跑在哪 | 说明 |
 |---|---|---|
-| vLLM（Qwen2.5-1.5B，`:8000`） | GPU 机 | 单卡 24G，`--max-model-len 2048`，`--gpu-memory-utilization` 留余量 |
-| Prometheus（`:9090`） | GPU 机，docker | 抓 vLLM，补 `app` / `namespace` label |
-| loadgen | GPU 机 | 本机打 `localhost:8000`，不用把 8000 也转出来 |
+| vLLM（Qwen2.5-1.5B，`:8000`） | 腾讯云 CVM（GPU 按量实例） | 单卡 T4 16G / A10 24G 都够 1.5B；`--max-model-len 2048`，`--gpu-memory-utilization` 留余量 |
+| Prometheus（`:9090`） | CVM，docker | 抓 vLLM，补 `app` / `namespace` label |
+| loadgen | CVM | 本机打 `localhost:8000`，不用把 8000 也转出来 |
 | KubeStasis manager | **本地宿主机进程**（`go run ./cmd`） | 直连当前 kubeconfig，避开"容器内访问宿主机"的网络坑 |
 | Kubernetes | 本地 docker-desktop v1.36.1 | `kubectl` 1.36.1 / Docker 29.9.2 已就绪；本机没有 `make` / `kind` / `helm`，用等价命令 |
-| SSH 隧道 | 本地 | `-L 9090:127.0.0.1:9090`，manager 连 `127.0.0.1:9090` |
+| SSH 隧道 | 本地，走 CVM 公网 IP | `-L 9090:127.0.0.1:9090`，manager 连 `127.0.0.1:9090`；CVM 安全组不必放行 9090 |
 
-**备选 B**：如果 SSH 隧道在沙箱里不通，把整套搬到 GPU 机上（k3s + in-cluster manager
-+ 同机 Prometheus），代价是要在那台机器上装 k3s、且跨容器访问宿主机端口要显式配
+**备选 B**：如果 CVM 的 SSH 从我这边连不上，把整套搬到 CVM 上（k3s + in-cluster manager
++ 同机 Prometheus），代价是要装 k3s、且跨容器访问宿主机端口要显式配
 `host.docker.internal`。主线不成立时再切，别一上来两头都搭。
+本地出站已实测：443、22，以及 2222 / 30000 这类自定义高位端口都通（对端确实监听时），
+所以主线 A 大概率成立；但这是 TCP 层探测，不等于 CVM 实例真能连，仍以 §2 自检 A 为准。
 
-需要账号本人的只有两件：**租机 / 付款** 和 **用完释放实例**。其余步骤都可脚本化。
+### 1.1 CVM 开工配置
+
+| 项 | 选什么 | 为什么 |
+|---|---|---|
+| 计费 | **按量计费** | 只跑 2–3 小时；创建时会冻结一小时费用，销毁后解冻 |
+| 机型 | 单卡 T4（16G）或 A10（24G） | 1.5B 模型用不到大卡；**单价以购买页实时报价为准**，不同卡型差好几倍，别照抄网上任何数字 |
+| 镜像 | 镜像市场「Ubuntu 20.04 GPU 基础镜像（预装 525 驱动 / CUDA / Docker / nvidia-container-toolkit）」 | 省掉装驱动和 toolkit；选纯净 Ubuntu 就得先手动装，那半天不值 |
+| 登录 | **绑定 SSH 密钥**（§1.2），不要只设密码 | 我这边用 `BatchMode` 非交互登录，只给密码会直接失败 |
+| 安全组 | 只放行入站 22；**不要**放行 9090 / 8000 | 9090 走隧道，公网暴露等于把 Prometheus 开放出去 |
+| 公网 IP | 分配公网 IP，或绑 EIP | 没公网 IP 我连不上；EIP 是为了关机再开时 IP 不变 |
+
+首次开 GPU 机型可能需要先在控制台申请配额，部分可用区也会无库存——这两件只能账号
+本人在控制台确认，开工前先确认好，别等实例开起来才发现选不了卡。
+
+### 1.2 SSH 密钥
+
+我在本机生成了一对专用密钥（私钥留在本地、不入库、不进 git）：
+
+```
+~/.ssh/kubestasis_vllm_tencent        # 私钥，权限 600
+~/.ssh/kubestasis_vllm_tencent.pub    # 公钥
+```
+
+创建 CVM 时在「SSH 密钥」里新建并粘贴这段公钥：
+
+```
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIe1z1vH1W1iCmgUta/kJZI6yeMzAuL7XGVltACAYJwI kubestasis-vllm-tencent-temp
+```
+
+实例销毁后这对密钥就没用了，可以随时删。
+
+需要账号本人的共四件：**注册/实名与付款**、**创建实例（选卡、绑公钥、确认配额）**、
+把公网 IP 给我、**用完销毁实例**。其余步骤都可脚本化代跑。
 
 ## 2. 前置自检（开工第一条命令）
 
 ```bash
-# A. 隧道是否通（不通就切备选 B，或改成逐条命令手工执行）
-ssh -o BatchMode=yes -p <PORT> <USER>@<HOST> 'echo ok'
+# A. CVM 是否能连（腾讯云默认 22，用 §1.2 的密钥；不通就切备选 B）
+ssh -o BatchMode=yes -i ~/.ssh/kubestasis_vllm_tencent -p 22 root@<公网IP> 'echo ok'
 
-# B. 真实指标名（抄进 §7）
-ssh -p <PORT> <USER>@<HOST> 'curl -s localhost:8000/metrics | grep -E "^vllm:" | head -30'
+# B. 真实指标名（抄进 §7；vLLM 要到 §3.1 才起，这条在起完服务后跑）
+ssh -i ~/.ssh/kubestasis_vllm_tencent -p 22 root@<公网IP> \
+  'curl -s localhost:8000/metrics | grep -E "^vllm:" | head -30'
 
 # C. 本地集群
 kubectl get nodes
 ```
 
-A 不通就先停，不要往下跑；B 里三条指标缺任何一条，按 §6 中止。
+A 不通就先停，不要往下跑；B 里三条指标缺任何一条，按 §5 中止。
 
 ## 3. 步骤
 
-### 3.1 起 vLLM（GPU 机）
+### 3.1 起 vLLM（CVM）
 
 ```bash
 vllm serve Qwen/Qwen2.5-1.5B --port 8000 --max-model-len 2048 \
@@ -100,9 +135,16 @@ vllm serve Qwen/Qwen2.5-1.5B --port 8000 --max-model-len 2048 \
 curl -s localhost:8000/v1/models            # 确认服务起来
 ```
 
-`--gpu-memory-utilization` 默认 0.9，24G 卡上容易挤爆；0.85 是保守起点，按实际显存调。
+`--gpu-memory-utilization` 默认 0.9，容易和模型权重、激活一起挤爆显存；0.85 是保守起点，
+按实际显存调。T4 只有 16G，1.5B 模型够用但余量小，起不来就把 `max-model-len` 降到 1024
+或把该值调到 0.7；A10 24G 宽松些。
 
-### 3.2 写 `prom.yml`（GPU 机）
+§1.1 的 GPU 基础镜像预装了驱动 / CUDA / Docker / toolkit，**不含 vLLM 本体**，开工先装：
+`pip install vllm`（注意与镜像里 CUDA 版本匹配），或用官方 `vllm/vllm-openai` 镜像以
+`--gpus all` 起容器。若改用容器，§3.2 的 target 要相应改成容器可达地址，别照抄
+`host.docker.internal:8000`。这一步以 `curl -s localhost:8000/v1/models` 返回为准。
+
+### 3.2 写 `prom.yml`（CVM）
 
 ```yaml
 global:
@@ -124,7 +166,7 @@ scrape_configs:
 Linux 上 docker 容器访问宿主机，起容器时要带
 `--add-host=host.docker.internal:host-gateway`。
 
-### 3.3 起 Prometheus（GPU 机）
+### 3.3 起 Prometheus（CVM）
 
 ```bash
 docker run -d --name prom -p 9090:9090 \
@@ -150,7 +192,7 @@ groups:
 ### 3.4 隧道（本地，保持后台）
 
 ```bash
-ssh -N -L 9090:127.0.0.1:9090 -p <PORT> <USER>@<HOST>
+ssh -N -i ~/.ssh/kubestasis_vllm_tencent -L 9090:127.0.0.1:9090 -p 22 root@<公网IP>
 curl -s 'http://127.0.0.1:9090/api/v1/query?query=up' | head -c 200
 ```
 
@@ -204,7 +246,7 @@ spec:
 `cooldownSeconds` / `scaleDownStabilizationSeconds` 调小是为了让 `1→3→1` 在一小时内看完；
 正式压测的默认值是 120 / 60，别把这个配置写回主报告的参数表。
 
-### 3.7 打流（GPU 机）
+### 3.7 打流（CVM）
 
 持续 ≥3 分钟，让 `num_requests_waiting` 稳定超过 2；并发从 4 起步逐步加到 32，
 每档停 30 秒。用 `/v1/completions`，`max_tokens` 给到 128 以上，否则 TTFT 和
@@ -222,8 +264,22 @@ manager 是 `go run` 时日志就在它的终端里，直接从那里拷 Reason 
 
 ### 3.9 收尾
 
-删 App、停 manager、关隧道，**然后到 AutoDL 控制台释放实例**。
-关机不等于停计费，这一步漏了会一直扣钱。
+删 App、停 manager、关隧道，**然后到腾讯云控制台销毁/退还实例**。
+
+按量实例的关机计费容易踩坑，先说清楚：
+
+- 按量实例**默认 `KEEP_CHARGING`**（关机照收 CPU/内存/GPU），但也有
+  **「关机不收费」`STOP_CHARGING`** 选项：在控制台关机时选它，或 `StopInstances` API
+  传 `StoppedMode=STOP_CHARGING`，CPU/内存/GPU 才停收（GPU 异构实例同样停）。
+- 但即便选了「关机不收费」，**云盘、公网带宽、镜像仍继续计费**；而且 CPU/内存/GPU
+  被释放、公网 IP 被回收（除非先转 EIP），再开机可能因资源不足失败、IP 也变了。
+- 功能有限制：仅系统盘和数据盘**均为云盘**的按量实例可用；不适用于竞价实例、
+  搭载本地盘的实例、在实例内部执行 `shutdown`、欠费关机。
+- 所以本实验只跑一次、跑完不留环境，**最省事也最省钱的收尾是直接「销毁/退还」实例**，
+  而不是纠结关机模式。这一步只能账号本人做。
+
+一句话：不管是销毁还是关机，都别只把进程停了就走。账单以控制台实际出账为准，
+按量计费创建时冻结的一小时费用会在销毁后解冻。
 
 ## 4. 验收清单（跑完才打勾，现在全部留空）
 
@@ -253,7 +309,7 @@ vLLM 快一点、让 `gpu_cache_usage_perc` 这个名字名副其实。所以 GP
 
 | 档 | 花销 | 做法 | 能写进结论的措辞 | 代价 |
 |---|---|---|---|---|
-| 主线 A：租 GPU 机 | 20–50 元 / 2–3 小时 | §1–§3 原样 | "在单卡 GPU 的真实 vLLM 上" | 要账号本人租机与释放；公网别直接暴露 9090，走 §3.4 隧道 |
+| 主线 A：腾讯云 CVM 按量 GPU 实例 | 按量计费，2–3 小时 | §1–§3 原样 | "在单卡 GPU 的真实 vLLM 上" | **单价以购买页实时报价为准**（T4 / A10 单卡，不同卡型差好几倍）；要账号本人实名付款、创建、绑公钥、销毁；安全组只开 22，9090 走 §3.4 隧道 |
 | **零成本 C：本机 CPU 版 vLLM** | **0 元** | 见下 | **"在真实 vLLM（CPU 后端）上，三信号中 N 条触发了决策"** | 见下，口径要多一层限定，但仍是真 vLLM、真 `/metrics`、真推理 |
 | 免费 GPU：Kaggle / Colab | 0 元，但要注册 | 免费 T4 notebook | 不建议 | 会话 9–12 小时会断、环境每次重置、不能常驻开放端口给本地 controller 连；SSH 隧道那条路直接断了 |
 
@@ -289,7 +345,8 @@ manager 直连 `127.0.0.1:9090`，**不需要 SSH 隧道、不需要第二台机
 
 ### 止损，三档通用
 
-**单卡 24G 上 KV cache 占用率未必能推到 0.85**——1.5B 模型配 2048 上下文，KV 池很大。
+**单卡上 KV cache 占用率未必能推到 0.85**（T4 16G / A10 24G 都一样）——1.5B 模型配
+2048 上下文，KV 池很大。
 CPU 档则相反，`VLLM_CPU_KVCACHE_SPACE=2` 时更容易打满。无论哪档，它不越阈值就如实写
 "KVCacheUsage 未触发"，不要为了凑齐三信号把目标值改到 0.1。三条里能坐实两条，也比编一条强。
 
