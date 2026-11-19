@@ -29,14 +29,15 @@ limitations under the License.
 //   - DeltaFIFO 的每个 key 只保留**压缩后**的一个 delta（client-go 保留一串），
 //     因为 Handler 关心的永远是最新状态，中间态没有信息量
 //   - 没有 sharedIndexInformer 的多 Handler 扇出与 processor 层
-//   - Watch 断线直接重新 List（client-go 用 resourceVersion 续传 + 书签优化）；
-//     功能等价，代价是一次全量——对 mini 规模可接受
+//   - Watch 断线后重新 List（client-go 用 resourceVersion 续传 + 书签优化），
+//     代价是一次全量；重列时对 Store 做差集，补出断线期间被删的对象
 package miniinformer
 
 import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 )
 
 // ---------- ListWatch：数据从哪里来 ----------
@@ -101,11 +102,12 @@ type Delta[T any] struct {
 type DeltaFIFO[T any] struct {
 	keyFunc KeyFunc[T]
 
-	mu     sync.Mutex
-	cond   *sync.Cond // 替代 chan 做"队列非空"通知：Pop 阻塞等待
-	queue  []string   // 键的 FIFO 顺序
-	deltas map[string]Delta[T]
-	closed bool
+	mu      sync.Mutex
+	cond    *sync.Cond // 替代 chan 做"队列非空"通知：Pop 阻塞等待
+	queue   []string   // 键的 FIFO 顺序
+	deltas  map[string]Delta[T]
+	closed  bool
+	wakeSeq uint64 // Wake() 每次递增；Pop 用它区分"被唤醒"和"真有数据"
 }
 
 func NewDeltaFIFO[T any](keyFunc KeyFunc[T]) *DeltaFIFO[T] {
@@ -115,7 +117,12 @@ func NewDeltaFIFO[T any](keyFunc KeyFunc[T]) *DeltaFIFO[T] {
 }
 
 func (f *DeltaFIFO[T]) enqueue(t DeltaType, obj T) {
-	key := f.keyFunc(obj)
+	f.enqueueKey(t, f.keyFunc(obj), obj)
+}
+
+// enqueueKey 允许调用方给定 key。List 回放补删除时手里是 Store 的旧 key
+// 和墓碑对象，重跑 keyFunc 未必得到同一个 key（对象可能已经变形）。
+func (f *DeltaFIFO[T]) enqueueKey(t DeltaType, key string, obj T) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.closed {
@@ -130,6 +137,11 @@ func (f *DeltaFIFO[T]) enqueue(t DeltaType, obj T) {
 		f.deltas[key] = Delta[T]{Type: DeltaDeleted, Key: key, Object: obj}
 	case exists && old.Type == DeltaDeleted && t == DeltaDeleted:
 		// 连续删除去重
+	case exists && t == DeltaSync && (old.Type == DeltaAdded || old.Type == DeltaUpdated):
+		// 全量回放撞上还没消费的真实变更。client-go 保留 delta 串，Add 和
+		// Sync 会依次被消费；这里压成一条，若直接覆盖成 Sync，AddFunc /
+		// UpdateFunc 就永远不触发。保留原类型，对象取回放的最新值。
+		f.deltas[key] = Delta[T]{Type: old.Type, Key: key, Object: obj}
 	default:
 		if !exists {
 			f.queue = append(f.queue, key)
@@ -145,12 +157,17 @@ func (f *DeltaFIFO[T]) Update(obj T) { f.enqueue(DeltaUpdated, obj) }
 func (f *DeltaFIFO[T]) Delete(obj T) { f.enqueue(DeltaDeleted, obj) }
 func (f *DeltaFIFO[T]) Sync(obj T)   { f.enqueue(DeltaSync, obj) }
 
-// Pop 阻塞直到有变更或队列关闭。closed 后返回 ErrClosed。
+// Pop 阻塞直到有变更、队列被 Close、或等待被 Wake 打断。
+//
+// cond.Wait 不响应 channel，所以退出信号只能靠 Wake() 转成 Broadcast。
+// wakeSeq 记录本次等待的起点：广播可能发生在进入 Wait 之前，只检查队列长度
+// 会丢掉这次唤醒。
 var ErrClosed = errors.New("miniinformer: DeltaFIFO closed")
 
+// ErrInterrupted 表示等待被 Wake() 打断，队列本身仍然可用。
+var ErrInterrupted = errors.New("miniinformer: DeltaFIFO wait interrupted")
+
 func (f *DeltaFIFO[T]) Pop(ctx context.Context) (Delta[T], error) {
-	// cond.Wait 无法响应 ctx，用 close 广播做退出路径：
-	// Run 的退出依赖 Close()，ctx 参数留给调用方做"先查一次"的快速退出
 	select {
 	case <-ctx.Done():
 		var zero Delta[T]
@@ -160,18 +177,32 @@ func (f *DeltaFIFO[T]) Pop(ctx context.Context) (Delta[T], error) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	for len(f.queue) == 0 && !f.closed {
+	seen := f.wakeSeq
+	for len(f.queue) == 0 && !f.closed && f.wakeSeq == seen {
 		f.cond.Wait()
 	}
 	if len(f.queue) == 0 {
 		var zero Delta[T]
-		return zero, ErrClosed
+		if f.closed {
+			return zero, ErrClosed
+		}
+		return zero, ErrInterrupted
 	}
 	key := f.queue[0]
 	f.queue = f.queue[1:]
 	d := f.deltas[key]
 	delete(f.deltas, key)
 	return d, nil
+}
+
+// Wake 唤醒所有阻塞中的 Pop，但不关闭队列。
+// 一轮 listAndWatch 结束时调用：consume 可能正卡在 cond.Wait，只关 done
+// 唤不醒它，会每断一次线漏一个 goroutine。
+func (f *DeltaFIFO[T]) Wake() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.wakeSeq++
+	f.cond.Broadcast()
 }
 
 // Close 唤醒所有阻塞的 Pop 并让它们返回 ErrClosed。
@@ -213,6 +244,18 @@ func (s *Store[T]) List() []T {
 	out := make([]T, 0, len(s.items))
 	for _, v := range s.items {
 		out = append(out, v)
+	}
+	return out
+}
+
+// Entries 返回缓存快照（key → 最后已知对象）。List 回放时用它算差集，
+// 把断线期间被删掉的对象从 Store 里清出去。
+func (s *Store[T]) Entries() map[string]T {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]T, len(s.items))
+	for k, v := range s.items {
+		out[k] = v
 	}
 	return out
 }
@@ -263,16 +306,30 @@ func (i *Informer[T]) HasSynced() bool {
 
 // Run 启动控制循环，直到 ctx 取消。
 //
-// 一轮 = List（全量回放成 Sync delta + 重建 Store）→ 启动消费协程 → Watch（增量）。
-// Watch 通道关闭（断线/超时）→ 重新 List 再来一轮。消费协程在一轮结束时通过
-// 局部 done 通道退出，避免断线重列期间旧协程继续消费新队列。
+// 一轮 = List（全量回放成 Sync delta，并对 Store 做差集补删）→ 启动消费协程
+// → Watch（增量）。Watch 断线、List 失败、Watch 建立失败都退避后重来：
+// apiserver 抽风时零间隔重连等于自己打自己。
 func (i *Informer[T]) Run(ctx context.Context) error {
+	const baseDelay = 100 * time.Millisecond
+	const maxDelay = 5 * time.Second
+	delay := baseDelay
 	for {
-		if err := i.listAndWatch(ctx); err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return nil
-			}
-			return err
+		err := i.listAndWatch(ctx)
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(delay):
+		}
+		if err == nil {
+			delay = baseDelay // 正常断线：下一轮从最短退避起步
+			continue
+		}
+		delay *= 2
+		if delay > maxDelay {
+			delay = maxDelay
 		}
 	}
 }
@@ -282,27 +339,41 @@ func (i *Informer[T]) listAndWatch(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// 全量回放：先发 Sync delta（FIFO 顺序 = List 顺序），再重建 Store
+	// 全量回放：Sync delta 按 List 顺序入队
 	for _, obj := range items {
 		i.fifo.Sync(obj)
 	}
+	// 断线期间被删的对象收不到 watch 事件，重连后的 List 里也没有。client-go
+	// 的 Reflector 用 Replace() 为这类 key 合成删除 delta；这里对 Store 的旧
+	// key 做差集补上，否则它们永远留在缓存里，DeleteFunc 也不会触发。
+	present := make(map[string]struct{}, len(items))
+	for _, obj := range items {
+		present[i.keyFunc(obj)] = struct{}{}
+	}
+	for key, stale := range i.store.Entries() {
+		if _, ok := present[key]; !ok {
+			i.fifo.enqueueKey(DeltaDeleted, key, stale)
+		}
+	}
+
 	done := make(chan struct{})
+	defer func() {
+		close(done)
+		i.fifo.Wake() // 收掉可能正阻塞在 Pop 的 consume
+	}()
 	go i.consume(ctx, done)
 
 	stream, err := i.lw.Watch(ctx, rv)
 	if err != nil {
-		close(done)
 		return err
 	}
-	defer close(done)
-
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case ev, ok := <-stream:
 			if !ok {
-				return nil // 断线：返回后外层重新 List
+				return nil // 断线：Run 退避后重新 List
 			}
 			switch ev.Type {
 			case Added:
@@ -326,14 +397,17 @@ func (i *Informer[T]) consume(ctx context.Context, done chan struct{}) {
 		}
 		d, err := i.fifo.Pop(ctx)
 		if err != nil {
-			select {
-			case <-done:
-				return
-			case <-ctx.Done():
-				return
-			default:
-				continue // Pop 被 Close 之外的假唤醒打断：重来
+			if errors.Is(err, ErrInterrupted) {
+				select {
+				case <-done:
+					return
+				case <-ctx.Done():
+					return
+				default:
+					continue // 被 Wake 但本轮还没结束：接着等
+				}
 			}
+			return // ErrClosed 或 ctx 取消：再等也不会有数据
 		}
 		old, existed := i.store.Get(d.Key)
 		switch d.Type {

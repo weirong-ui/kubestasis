@@ -130,7 +130,10 @@ func TestApply_RetriesOnConflict(t *testing.T) {
 	if *got.Spec.Replicas != 5 {
 		t.Fatalf("replicas = %d, want 5", *got.Spec.Replicas)
 	}
-	if *app.Spec.Replicas != 5 {
-		t.Fatalf("caller-side app.Spec.Replicas not synced, got %d", *app.Spec.Replicas)
+	// Apply 不修改传入对象：旧实现会顺手写 app.Spec.Replicas，好让调用方本轮
+	// 用上新值。那是签名里看不见的副作用，调用方无法从接口判断。需要新值的
+	// 调用方用 d.ToReplicas，或者像控制器那样自己显式同步。
+	if *app.Spec.Replicas != 2 {
+		t.Fatalf("Apply must not mutate the input, got %d", *app.Spec.Replicas)
 	}
 }

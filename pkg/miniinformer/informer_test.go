@@ -40,12 +40,18 @@ type fakeLW struct {
 	events   []Event[pod]
 	watchCh  chan Event[pod]
 	watchN   int // Watch 被调用的次数（验证断线重连）
+	listN    int // List 被调用的次数
+	listErrs int // 前 N 次 List 返回错误（验证退避重试）
 	closeNow bool
 }
 
 func (f *fakeLW) List(ctx context.Context) ([]pod, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.listN++
+	if f.listN <= f.listErrs {
+		return nil, "", fmt.Errorf("transient list failure #%d", f.listN)
+	}
 	out := make([]pod, len(f.items))
 	copy(out, f.items)
 	return out, fmt.Sprintf("rv%d", f.watchN), nil
@@ -181,6 +187,55 @@ func TestDeltaFIFO_PopBlocksUntilClose(t *testing.T) {
 	}
 }
 
+// 全量回放撞上还没被消费的新增：不能把 Add 覆盖成 Sync，否则 AddFunc 永远不触发。
+func TestDeltaFIFO_SyncDoesNotOverrideQueuedAdd(t *testing.T) {
+	f := NewDeltaFIFO(podKey)
+	f.Add(pod{"a", "v1"})
+	f.Sync(pod{"a", "v2"}) // 回放的是更新的对象
+	if f.Len() != 1 {
+		t.Fatalf("Len = %d, want 1", f.Len())
+	}
+	d, err := f.Pop(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Type != DeltaAdded {
+		t.Fatalf("Sync must not shadow a queued Add, got %s", d.Type)
+	}
+	if d.Object.image != "v2" {
+		t.Fatalf("object should be the replayed latest value, got %s", d.Object.image)
+	}
+}
+
+// Wake 必须能打断阻塞中的 Pop，且不把队列一起关掉。
+func TestDeltaFIFO_PopInterruptedByWake(t *testing.T) {
+	f := NewDeltaFIFO(podKey)
+	errc := make(chan error, 1)
+	go func() {
+		_, err := f.Pop(context.Background())
+		errc <- err
+	}()
+	select {
+	case <-errc:
+		t.Fatal("Pop should block on empty queue")
+	case <-time.After(50 * time.Millisecond):
+	}
+	f.Wake()
+	select {
+	case err := <-errc:
+		if err != ErrInterrupted {
+			t.Fatalf("Wake must interrupt Pop with ErrInterrupted, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Pop did not wake up")
+	}
+	// 队列仍然可用
+	f.Add(pod{"a", "v1"})
+	if d, err := f.Pop(context.Background()); err != nil || d.Key != "a" {
+		t.Fatalf("queue must stay usable after Wake, got %v %v", d, err)
+	}
+}
+
 // ---------- Informer ----------
 
 func TestInformer_ListThenWatch(t *testing.T) {
@@ -241,6 +296,64 @@ func TestInformer_ResyncAfterWatchClose(t *testing.T) {
 	// 断线后应重新 List + Watch，并再回放一次全量
 	eventually(t, "watch retried", func() bool { lw.mu.Lock(); defer lw.mu.Unlock(); return lw.watchN >= 2 })
 	eventually(t, "relisted and replayed", func() bool { mu.Lock(); defer mu.Unlock(); return syncs >= 2 })
+}
+
+// 断线期间被删的对象收不到 watch 事件。重连后的 List 里没有它，Store 必须把它清掉，
+// 否则缓存里留着幽灵对象，DeleteFunc 永远不触发。client-go 的 Replace() 干的就是这件事。
+func TestInformer_RelistDropsDeletedObjects(t *testing.T) {
+	lw := &fakeLW{items: []pod{{"a", "v1"}, {"b", "v1"}}}
+	var mu sync.Mutex
+	var deletes []string
+	inf := New[pod](lw, podKey, Handler[pod]{
+		SyncFunc:   func(pod) {},
+		DeleteFunc: func(p pod) { mu.Lock(); deletes = append(deletes, p.name); mu.Unlock() },
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go inf.Run(ctx)
+
+	eventually(t, "initial list synced", inf.HasSynced)
+	if _, ok := inf.Store().Get("b"); !ok {
+		t.Fatal("b should be in store after first list")
+	}
+
+	// b 在断线期间被删掉：事件收不到，重连后的 List 也不含它
+	lw.mu.Lock()
+	lw.items = []pod{{"a", "v1"}}
+	lw.mu.Unlock()
+	lw.closeCurrent()
+
+	eventually(t, "relisted", func() bool {
+		lw.mu.Lock()
+		defer lw.mu.Unlock()
+		return lw.watchN >= 2
+	})
+	eventually(t, "stale key dropped from store", func() bool {
+		_, ok := inf.Store().Get("b")
+		return !ok
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if len(deletes) != 1 || deletes[0] != "b" {
+		t.Fatalf("DeleteFunc should fire once for b, got %v", deletes)
+	}
+}
+
+// List 偶尔失败不能让整条 Informer 退出。旧实现直接 return err，重试责任被
+// 甩给调用方；现在自己退避重来。
+func TestInformer_RunRetriesTransientListFailure(t *testing.T) {
+	lw := &fakeLW{items: []pod{{"a", "v1"}}, listErrs: 2}
+	inf := New[pod](lw, podKey, Handler[pod]{SyncFunc: func(pod) {}})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go inf.Run(ctx)
+
+	eventually(t, "recovered after transient List failures", inf.HasSynced)
+	lw.mu.Lock()
+	defer lw.mu.Unlock()
+	if lw.listN < 3 {
+		t.Fatalf("expected at least 3 List attempts, got %d", lw.listN)
+	}
 }
 
 // ---------- WorkQueue ----------

@@ -228,6 +228,10 @@ func (r *AppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.R
 		if err := r.Scaler.Apply(ctx, r.Client, &app, decision); err != nil {
 			return r.failOn(ctx, &app, "scale", err)
 		}
+		// Apply 只写 apiserver，不改传入对象。本轮 status 的 DesiredReplicas
+		// 要反映刚落盘的期望值，所以在调用方显式同步这一下。
+		next := decision.ToReplicas
+		app.Spec.Replicas = &next
 		reason := EventReasonScaleUp
 		if decision.Action == scaler.ActionScaleDown {
 			reason = EventReasonScaleDown

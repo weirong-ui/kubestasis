@@ -296,7 +296,9 @@ func (e *Engine) Apply(ctx context.Context, c client.Client, app *appsv1alpha1.A
 	}); err != nil {
 		return fmt.Errorf("write back replicas %d->%d: %w", d.FromReplicas, target, err)
 	}
-	// 同步给调用方：本轮 updateStatus 要用新期望值计算 DesiredReplicas
-	app.Spec.Replicas = &target
+	// 不修改传入的 app。这里曾经顺手写 app.Spec.Replicas = &target，好让调用方
+	// 本轮就能用上新值。那是个签名里看不见的副作用：Conflicted 重试拿的是新
+	// 对象，而调用方手里这份改没改、什么时候改，全靠读实现才知道。
+	// 需要新期望值的调用方直接用 d.ToReplicas（它就是要落盘的那个值）。
 	return nil
 }

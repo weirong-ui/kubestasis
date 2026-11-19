@@ -1,9 +1,8 @@
 # KubeStasis 实现状态（真实账本）
 
 > 本文件是**唯一可信的能力清单**。README 的一切对外描述以此为准，每完成一项就把状态改掉。
-> 最后更新：2026-11-18（补代码分工表、首屏重排、评审口径澄清；上一版 2026-11-05 傍晚补文档一致性门）
+> 最后更新：2026-11-19（补重复实验判定线、修 miniinformer 的 List 回放、去掉几处过度声明）
 > 验收口径：代码能在干净集群上 `deploy → apply App → Available`，且有可复现的证据。
-> 术语：文中「AI 对抗性自审」指把仓库材料交给另一个模型逐条挑刺，只采纳成立的部分；评审原文不入库，结论与处置记在 §九台账。此前这些记录写作"外部评审"，容易让人误以为是第三方人工评审，2026-11-18 统一改口径。
 > ⚠️ 项目原名 KubeSentry，2026-11-03 更名 KubeStasis；CRD group 于 2026-11-04 由 `apps.sentry.io` 改为 `kubestasis.io`（不再沿用第三方商标）。
 
 ## 一、当前结论
@@ -23,7 +22,7 @@
 | `go build ./...` | ✅ | 通过（Go 1.27.3 本机，module `go 1.22.0`；k8s v0.31.1 / controller-runtime v0.19.0） |
 | `go vet ./...` | ✅ | 无输出 |
 | `gofmt -l` | ✅ | 无未格式化文件 |
-| `go test ./...` | ✅ | **139 个用例**全绿（scaler 61 + controller 16 + healer 24 + webhook 24 + miniinformer 11 + metrics 3，含子测试）；另有 `test/envtest/` 4 条控制循环链路在 CI `envtest` job 用真实 apiserver 跑 |
+| `go test ./...` | ✅ | **143 个用例**全绿（scaler 61 + controller 16 + healer 24 + webhook 24 + miniinformer 15 + metrics 3，含子测试）；另有 `test/envtest/` 4 条控制循环链路在 CI `envtest` job 用真实 apiserver 跑 |
 | 部署链路 | ✅ | Docker Desktop k8s v1.36.1：`kubectl apply` CRD+RBAC+Manager → 控制器 Pod `1/1 Running` |
 | 创建资源 | ✅ | `deployment.apps/sample 2/2`、`service/sample ClusterIP 80/TCP`、`endpoints 10.244.0.9,10.244.0.10` |
 | 状态真实性 | ✅ | `NAME sample PHASE Stable READY 2 DESIRED 2`；`status.conditions` 出现 `Available=True / Progressing=False` |
@@ -61,7 +60,7 @@
 | 缩容稳定窗口 | ✅ 已实现 | `scaling.scaleDownStabilizationSeconds`（默认 60s，0 关闭）+ `status.belowTargetSince`：信号需持续低于目标满窗口才允许缩容，任一信号高于目标的采样立即重置计时。补的是压测 run5 抓到的误缩容缺口（突发起点 4→3→13s 又扩回 5）。真集群验证：3 副本零流量下，窗口期内纹丝不动，到点后**单步** 3→2（不连跳——status 先于 spec 写入的竞态修复同时被验证） |
 | 伸缩决策指标导出 | ✅ 已实现 | `internal/metrics/`：`kubestasis_scaling_decisions_total{namespace,app,action,reason}`（reason 用固定枚举 ReasonCode，不是自由文本——防 label 基数爆炸）+ `desired/current/signal_replicas` 三个 gauge；App 删除时 `Forget` 清理防残留。真集群验证：4 个指标全部出现在 `/metrics` 端点，含一条 `ScaleDown` 决策记录 |
 | Helm Chart | ✅ 已实现 | `charts/kubestasis`（0.1.1）：CRD 放 `crds/`、SA/RBAC/Deployment/metrics Service/webhook 全模板化；webhook 证书二选一——默认 `helm genSelfSignedCert` 渲染期生成（零外部依赖），或 `--set webhook.certManager.enabled=true` 走 cert-manager；`helm lint` + `template` + server-side dry-run + 真集群 `upgrade --install`（p9 镜像）+ 滚动升级全部验证。注意事项与 values 说明见 [charts/kubestasis/README.md](../charts/kubestasis/README.md) |
-| 单元测试 | ✅ 139 用例 | scaler 61 + controller 16 + healer 24 + webhook 24 + miniinformer 11 + metrics 3（用 `--- PASS` 行数按包实测，和 §二 同一口径） |
+| 单元测试 | ✅ 143 用例 | scaler 61 + controller 16 + healer 24 + webhook 24 + miniinformer 15 + metrics 3（用 `--- PASS` 行数按包实测，和 §二 同一口径） |
 | envtest 集成测试 | ✅ 4 条链路 | `test/envtest/`：进程内起真实 etcd + apiserver，验 watch → enqueue → Reconcile → status 回写 的闭环——创建（Deployment/Service/ownerRef/finalizer/DesiredReplicas）、就绪回写（代写 Deployment.status → App Available=True）、删除放闸、副本漂移拉回。CI 有独立 `envtest` job；本地无二进制时自动 Skip（`KUBESTASIS_REQUIRE_ENVTEST=1` 强制失败） |
 | Grafana 面板 | ✅ 已实现 | `deploy/monitoring/grafana/`：4 行 16 格（概览 → 决策 → 信号与窗口 → 控制器健康/运行时），变量按 App 命名空间/App 过滤；`kustomization.yaml` 打成带 `grafana_dashboard: "1"` 的 ConfigMap 供 sidecar 自动发现。**真集群验证**：kind + 真 Prometheus 抓控制器 metrics，跑出一次完整的 2→1（稳定窗口挡了 5 轮 stabilizing）→2；截图 [docs/assets/grafana-dashboard.png](assets/grafana-dashboard.png)，读图指南见 [deploy/monitoring/README.md](../deploy/monitoring/README.md) |
 | 压测与 HPA 对比表 | ✅ 已完成 | 2026-11-04：同镜像/同资源/同流量下 vs 原生 HPA（CPU 50%）的对照实验，5 秒粒度采样入库 `docs/benchmark/data.csv`，报告见 [docs/benchmark/hpa-vs-kubestasis.md](benchmark/hpa-vs-kubestasis.md)。结论有限定条件，报告里写清了口径与失效风险 |
@@ -117,7 +116,7 @@
 
 ## 七、已知不解决的问题（主动画边界）
 
-这一节存在的原因：一份只列"能做什么"的清单，读者没法判断可信度。下面这些是**明确知道、短期不打算解决**的问题——不是遗漏，是取舍。
+下面是明确知道、短期不打算解决的问题。不是遗漏，是取舍。
 
 | 问题 | 为什么现在不解决 | 真要解决需要什么 |
 |---|---|---|
@@ -159,9 +158,10 @@
 | 2026-11-04 深夜 | envtest 控制循环回归落地（原计划第 3 周，提前完成） | 新增 `test/envtest/` 4 条链路 + CI 独立 `envtest` job（5 → 6 job）；P0 最后一个未勾项清零 |
 | 2026-11-04 深夜 | Grafana 面板 + 录制规则两处真 bug 修复 | 面板 4 行 16 格真集群截出入库；修 `alerts:` 写在 rules 数组外（PrometheusRule schema 会静默剪掉，告警从未生效）、比例规则无序列时显示 No data（改零填充）；chart ServiceMonitor 补 `honorLabels: true`（否则决策指标的 App 命名空间被目标标签覆盖，面板按 App 过滤全空） |
 | 2026-11-05 | 压测报告降级口径 + 方差预检 + 账本回删 + README 定位段 + v0.1.0 tag | 报告加版本声明（数据采集于稳定窗口实现前）；"快 1.7 倍"降级为单次观察（HPA 侧三轮准重复 σ≈8.2s，组间差仅 2.1σ），副本-分钟（≈6σ）提为主结论；`variance-precheck.md` + 复算脚本入库；STATUS §七/§八 回删已解决项（Grafana/envtest）、修正两处因果与日期；README 新增"什么时候该用/不该用"（承认 KEDA+Rollouts+Kyverno 组合更省事）；打 `v0.1.0` |
-| 2026-11-05 下午 | 决策函数纯化（AI 对抗性自审 第 4 条） | `Decide()` 不再改 `Engine.nowFunc`（删字段，时钟改为调用参数）也不再改 `app.Status.BelowTargetSince`（改为 `Decision.BelowTarget` 三态建议，由控制器落盘）；新增 `TestDecide_DoesNotMutateInput` 与并发用例，把"纯函数可测"的承诺钉成测试 |
-| 2026-11-05 傍晚 | 文档一致性门（AI 对抗性自审："文档内部不一致"） | 修 README 开发节的 113（漏改为 139）、DESIGN 三处 envtest 仍标"计划中"、G4 补"不做按权重引流"；新增 `hack/doc_consistency.py` + docs job 门——用例数以徽章为单一事实源（历史演进行豁免）、产物已存在就不许再声称未做。人工核对漏过一次，改成机器查 |
-| 2026-11-18 | 首页重排 + 代码分工表 + 评审口径澄清 + 本文件日期修正 | README 首屏改成"它干什么 / 三行能力 / 三条命令 / 一个最稳的数"，证据表下移；23s vs 40s 从 README 撤走只留报告（n=1，HPA 侧 σ≈8s，够不上结论）；新增"代码和文档是怎么分工的"模块表；文中 8 处"外部评审"统一改"AI 对抗性自审"；顶部日期从 11-04 晚改为实际值（原值落后两个工作段，属账本自己贴错日期）；新增 `doc_consistency` 第 4 类检查：顶部日期不得早于台账最大日期 |
+| 2026-11-05 下午 | 决策函数纯化（复查第 4 条） | `Decide()` 不再改 `Engine.nowFunc`（删字段，时钟改为调用参数）也不再改 `app.Status.BelowTargetSince`（改为 `Decision.BelowTarget` 三态建议，由控制器落盘）；新增 `TestDecide_DoesNotMutateInput` 与并发用例，把"纯函数可测"的承诺钉成测试 |
+| 2026-11-05 傍晚 | 文档一致性门（复查："文档内部不一致"） | 修 README 开发节的 113（漏改为 139）、DESIGN 三处 envtest 仍标"计划中"、G4 补"不做按权重引流"；新增 `hack/doc_consistency.py` + docs job 门——用例数以徽章为单一事实源（历史演进行豁免）、产物已存在就不许再声称未做。人工核对漏过一次，改成机器查 |
+| 2026-11-18 | 首页重排 + 代码分工表 + 评审口径澄清 + 本文件日期修正 | README 首屏改成"它干什么 / 三行能力 / 三条命令 / 一个最稳的数"，证据表下移；23s vs 40s 从 README 撤走只留报告（n=1，HPA 侧 σ≈8s，够不上结论）；新增"代码和文档是怎么分工的"模块表；文中 8 处"外部评审"统一改成"复查"；顶部日期从 11-04 晚改为实际值（原值落后两个工作段，属账本自己贴错日期）；新增 `doc_consistency` 第 4 类检查：顶部日期不得早于台账最大日期 |
+| 2026-11-19 | miniinformer 回放与退出修正、`Apply` 去副作用、文档瘦身 | 复查发现五处：重连后的 List 不清掉断线期间被删的 key（Store 留幽灵对象、`DeleteFunc` 不触发）；排队的 `Add` 被 `Sync` 覆盖，`AddFunc` 不触发；consume 卡在 `Pop` 时 done 唤不醒（每断一次线漏一个 goroutine）；List 失败直接退出、断线零间隔重连；`Apply` 偷偷改 `app.Spec.Replicas`。文档侧删掉 6σ 表述、git 历史核验段和重复的严谨说明，分工表八行压到五行；139 → 143 用例 |
 
 ### 11.03 晚新踩的坑（已修，写进记忆）
 

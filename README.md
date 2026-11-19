@@ -16,12 +16,12 @@ make deploy-webhook IMG=kubestasis:dev
 kubectl apply -f config/samples/app_v1alpha1_app.yaml
 ```
 
-**最稳的一个数**：同镜像、同资源、同流量时间线对比原生 HPA，全程副本-分钟 63.7 vs 72.8（−12.5%），三轮准重复口径约 6σ，原始 CSV 可复算。扩容响应那次观察只有 n=1，不写进首页，理由和废轮记录在[报告](docs/benchmark/hpa-vs-kubestasis.md)里。
+**最稳的一个数**：同镜像、同资源、同流量时间线对比原生 HPA，全程副本-分钟 63.7 vs 72.8（−12.5%），原始 CSV 可复算。这是两臂各跑一次的单次对比，重复实验的判定线在开跑之前就写死了，跑完回来改这个数。扩容响应那次只有 n=1，不写进首页，理由和废轮记录在[报告](docs/benchmark/hpa-vs-kubestasis.md)里。
 
 **定位**：不是 HPA 替代品，也不打算被生产采用。它是一个把"看指标伸缩 + 看故障自愈 + 准入期兜住错误配置"放进同一个控制回路的实现研究，每条能力附可复算的证据和失败记录。什么时候该用、什么时候不该用，见下一节。
 
 [![CI](https://github.com/weirong-ui/kubestasis/actions/workflows/ci.yml/badge.svg)](https://github.com/weirong-ui/kubestasis/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-139%20cases-brightgreen)](docs/STATUS.md)
+[![Tests](https://img.shields.io/badge/tests-143%20cases-brightgreen)](docs/STATUS.md)
 [![Go](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
@@ -31,11 +31,11 @@ kubectl apply -f config/samples/app_v1alpha1_app.yaml
 |---|---|
 | 按 QPS 伸缩 | [500 QPS 打流 → 1→5 副本；停流后渐进缩回 1](docs/demo/01-scaling.md)（集群内真 Prometheus 按 Pod 抓取） |
 | 分级自愈 | [crash 版本发布 → L2 摘除 → L3 按 ReplicaSet 回滚](docs/demo/02-self-healing.md)（CI 里有同链路回归断言） |
-| vs 原生 HPA | [同镜像、同资源、同流量时间线的压测对比](docs/benchmark/hpa-vs-kubestasis.md)（副本-分钟 −12.5%，约 6σ；扩容响应的方差问题、五轮废数据的逐轮归因、输掉的两项都写在里面；原始 CSV 可复算；重复实验的判定线已[预注册](docs/benchmark/pre-registration.md)，跑完回来改数） |
+| vs 原生 HPA | [同镜像、同资源、同流量时间线的压测对比](docs/benchmark/hpa-vs-kubestasis.md)（副本-分钟 −12.5%；扩容响应的方差问题、五轮废数据的逐轮归因、输掉的两项都写在里面；原始 CSV 可复算；重复实验的判定线在跑之前就写死了（[协议](docs/benchmark/d2a-protocol.md)），跑完回来改数） |
 | 可观测性 | [Grafana 面板实测截图](deploy/monitoring/README.md)——4 行 16 个面板，含一次真实的 2→1→2（稳定窗口挡缩容、到点缩、再扩）；同目录还有录制规则与"伸缩引擎休眠"告警 |
 | 全部能力/限制/踩坑 | [docs/STATUS.md](docs/STATUS.md)（唯一可信账本，含"已知不解决的问题"） |
 
-CI 六道门：`docs`（链接有效性）/ `build`（gofmt + vet + 139 用例 + `-race` 数据竞争检测）/ `envtest`（真实 apiserver 的控制循环回归，4 条链路）/ `chart`（helm lint + 双形态渲染 + CRD 逐字节 diff）/ `e2e`（kind 真集群跑通伸缩、自愈、Webhook 负向用例）/ `image`（多架构 + cosign 签名）。
+CI 六道门：`docs`（链接有效性）/ `build`（gofmt + vet + 143 用例 + `-race` 数据竞争检测）/ `envtest`（真实 apiserver 的控制循环回归，4 条链路）/ `chart`（helm lint + 双形态渲染 + CRD 逐字节 diff）/ `e2e`（kind 真集群跑通伸缩、自愈、Webhook 负向用例）/ `image`（多架构 + cosign 签名）。
 
 ## 什么时候该用，什么时候不该用
 
@@ -109,9 +109,9 @@ HPA 用 CPU 50%（全默认行为），KubeStasis 用 QPS 16/Pod（默认迟滞 
 | 全程副本-分钟 | 72.8 | **63.7**（-12.5%） |
 | 空闲后回到 1 副本 | **385s** | 450s（渐进缩容的代价） |
 
-只留三行能说明问题的。扩容响应那次是单次观察，HPA 侧自身噪声 σ≈8s，组间差够不上结论，不进这张表，只留在[报告](docs/benchmark/hpa-vs-kubestasis.md)里；它的重复实验判定线已[预注册](docs/benchmark/pre-registration.md)。
+只留三行能说明问题的。扩容响应那次是单次观察，HPA 侧自身噪声 σ≈8s，组间差够不上结论，不进这张表，只留在[报告](docs/benchmark/hpa-vs-kubestasis.md)里；它的重复实验判定线也写在那份[协议](docs/benchmark/d2a-protocol.md)里。
 
-输掉的那几项（突发#2 起点的一次误缩容、失败请求数）和五轮废数据的逐轮归因也在报告里，**哪一轮有原始 CSV 以报告 §3 的表格为准**，README 不复述。
+输掉的那几项（突发#2 起点的一次误缩容、失败请求数）和五轮废数据的逐轮归因也在报告里，包括每轮 CSV 的存档情况。
 
 口径、原始 CSV、复现脚本：[docs/benchmark/hpa-vs-kubestasis.md](docs/benchmark/hpa-vs-kubestasis.md)
 
@@ -182,18 +182,15 @@ webhook 证书默认用渲染期自签（零外部依赖），也可切 cert-man
 
 ## 代码和文档是怎么分工的
 
-这个项目大量用 AI 辅助。按模块写清楚用在哪，"部分工作由 AI 协助"那种句子读不出任何信息，等于免责声明。
+这个项目用 AI 辅助。按模块写清楚用在哪，"部分工作由 AI 协助"那种句子读不出任何信息。
 
 | 模块 | 分工 |
 |---|---|
-| `internal/controller`（Reconcile 主循环、status 回写、Finalizer 时序） | 骨架我写；冲突重试、删除放闸、条件竞态这些边界由 AI 起草，我逐行改 |
-| `internal/scaler`（多信号决策、迟滞、冷却、稳定窗口） | 语义我定：取最紧急者、迟滞只挡缩容、窗口状态放 status、`BelowTarget` 三态；实现与单测 AI 起草，我改 |
-| `internal/healer`（分级自愈、金丝雀回滚） | 分级顺序、观察期、防乒乓由我定；代码 AI 起草，我审 |
-| `internal/webhook` | AI 起草；校验规则与默认值我定 |
-| `pkg/miniinformer`（约 400 行泛型 ListWatch/DeltaFIFO/WorkQueue） | 我写；AI 用来对照 client-go 源码讲解 |
-| `test/envtest`、`test/e2e` | 断言我定；样板 AI 起草 |
-| `hack/`（报告复算、方差预检、文档一致性门） | AI 起草，口径我复核 |
-| `docs/`、掘金文章 | 我写；AI 润色，数字与结论我回原始 CSV 核 |
+| `internal/controller` | 骨架我写；冲突重试、删除放闸、条件竞态这些边界 AI 起草，我逐行改 |
+| `internal/scaler`、`internal/healer` | 决策语义和自愈顺序我定；实现与单测 AI 起草，我改 |
+| `internal/webhook` | 校验规则与默认值我定，代码 AI 起草 |
+| `pkg/miniinformer` | 我写 |
+| `test/`、`hack/`、`docs/` | 断言和口径我定；样板与脚本 AI 起草，数字回原始 CSV 核 |
 
 一条底线：AI 写下的每个"已验证"都要有对应的命令输出，没有就删。STATUS 里那些"未实测"就是这条底线的产物。
 
@@ -222,7 +219,7 @@ HOW-TO-START.md      从这套材料起步的步骤说明
 ```bash
 make run                 # 本地跑（连当前 kubeconfig）
 make manifests generate  # 重新生成 CRD/RBAC/DeepCopy
-go test ./... -cover     # 单元测试（139 用例）
+go test ./... -cover     # 单元测试（143 用例）
 ```
 
 ## Roadmap
