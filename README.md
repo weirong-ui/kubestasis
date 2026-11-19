@@ -33,6 +33,7 @@ kubectl apply -f config/samples/app_v1alpha1_app.yaml
 | 分级自愈 | [crash 版本发布 → L2 摘除 → L3 按 ReplicaSet 回滚](docs/demo/02-self-healing.md)（CI 里有同链路回归断言） |
 | vs 原生 HPA | [同镜像、同资源、同流量时间线的压测对比](docs/benchmark/hpa-vs-kubestasis.md)（副本-分钟 −12.5%；扩容响应的方差问题、五轮废数据的逐轮归因、输掉的两项都写在里面；原始 CSV 可复算；重复实验的判定线在跑之前就写死了（[协议](docs/benchmark/d2a-protocol.md)），跑完回来改数） |
 | 可观测性 | [Grafana 面板实测截图](deploy/monitoring/README.md)——4 行 16 个面板，含一次真实的 2→1→2（稳定窗口挡缩容、到点缩、再扩）；同目录还有录制规则与"伸缩引擎休眠"告警 |
+| AI 推理信号 | [vLLM 实测开工清单](docs/benchmark/vllm-inference.md)——**尚未执行**；三个信号目前只有单测覆盖，STATUS 里如实标着未实测 |
 | 全部能力/限制/踩坑 | [docs/STATUS.md](docs/STATUS.md)（唯一可信账本，含"已知不解决的问题"） |
 
 CI 六道门：`docs`（链接有效性）/ `build`（gofmt + vet + 143 用例 + `-race` 数据竞争检测）/ `envtest`（真实 apiserver 的控制循环回归，4 条链路）/ `chart`（helm lint + 双形态渲染 + CRD 逐字节 diff）/ `e2e`（kind 真集群跑通伸缩、自愈、Webhook 负向用例）/ `image`（多架构 + cosign 签名）。
