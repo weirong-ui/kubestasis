@@ -245,13 +245,33 @@ jobs:
           done
           kubectl wait --for=condition=Available app/heal-demo --timeout=240s
           echo "==> 自愈完成：回滚后恢复 Available 且未乒乓"
-      # ---------- L2 必须经过 PDB（11.20 回归门） ----------
+      # ---------- L2 必须走 eviction（11.20 回归门，同日修订） ----------
       # 旧实现是 c.Delete(ctx, pod)：Delete 属于非自愿中断，PDB 完全不参与，
-      # 一次多副本故障会在同一轮被删光。单测证明不了这件事——fake client 的
-      # eviction 最终也是 Delete，不会执行预算计算。只有真 apiserver 才给 429。
-      - name: L2 must respect PodDisruptionBudget
+      # 一次多副本故障会在同一轮被删光。现实现是
+      # c.SubResource("eviction").Create(ctx, pod, eviction)。
+      #
+      # 不能拿「PDB 拒绝 eviction（429）」当断言：L2 摘除的是
+      # CrashLoopBackOff / 未 Ready 的 Pod，Kubernetes 的 PDB 只保护
+      # Ready Pod——驱逐不健康 Pod 不减少可用副本，eviction API 会放行。
+      # 2026-11-20 首次在真 apiserver 跑时，PDB 状态是
+      # ALLOWED DISRUPTIONS 0，L2 事件仍是 "evicted 1 unhealthy pod(s)"，
+      # 门因此误报失败。这里改用三条间接证据（单条都不能证明运行时
+      # 调了哪个 API，合起来足以拦住「改回 Delete / 改回旧文案」的回归）：
+      #   ① RBAC 两份副本都声明 pods/eviction；
+      #   ② healer 源码只有 SubResource("eviction").Create，没有直接 Delete；
+      #   ③ L2 事件文案是 "evicted"（旧实现是 "deleted"）。
+      - name: L2 uses eviction, not Delete
         run: |
           set -e
+          # 静态证据 ①②
+          grep -q 'pods/eviction' config/rbac/role.yaml
+          grep -q 'pods/eviction' charts/kubestasis/templates/rbac.yaml
+          if grep -n 'Delete(ctx' internal/healer/engine.go; then
+            echo "FAIL: healer 出现直接 Delete(ctx, ...)，L2 可能退回非自愿中断"
+            exit 1
+          fi
+          grep -q 'SubResource("eviction").Create' internal/healer/engine.go
+
           kubectl create ns pdb-gate
           cat > /tmp/pdb-app.yaml <<'EOF'
           apiVersion: kubestasis.io/v1alpha1
@@ -269,8 +289,8 @@ jobs:
           kubectl apply -f /tmp/pdb-app.yaml
           kubectl -n pdb-gate wait --for=condition=Available app/pdb-app --timeout=240s
 
-          # minAvailable 100%：滚动发布的 surge Pod 也算进期望副本，
-          # 只要有一个副本不健康，disruptionsAllowed 就是 0
+          # PDB 只作语义记录，不参与断言：minAvailable 100% 时
+          # ALLOWED DISRUPTIONS 是 0，但 L2 驱逐未 Ready Pod 仍被放行。
           cat > /tmp/pdb.yaml <<'EOF'
           apiVersion: policy/v1
           kind: PodDisruptionBudget
@@ -286,27 +306,32 @@ jobs:
           kubectl apply -f /tmp/pdb.yaml
           kubectl -n pdb-gate get pdb pdb-app
 
-          echo "==> 发布 crash 版本，期望：L2 走 eviction 被 PDB 拒绝（429），事件里留痕"
+          echo "==> 发布 crash 版本，期望：L2 事件写 evicted（旧实现会写 deleted）"
           kubectl -n pdb-gate patch app pdb-app --type=merge \
             -p '{"spec":{"image":"kubestasis-demoapp:v2-crash"}}'
 
-          blocked=""
+          msg=""
           for i in $(seq 1 36); do
             msg=$(kubectl -n pdb-gate get events --field-selector reason=KubeStasisHealAction \
               -o jsonpath='{range .items[*]}{.message}{"\n"}{end}' 2>/dev/null || true)
-            if echo "$msg" | grep -q "disruption budget"; then
-              blocked="yes"; echo "$msg" | grep "disruption budget"; break
+            if echo "$msg" | grep -q "L2 Isolate: evicted"; then
+              break
             fi
             sleep 10
           done
           kubectl -n pdb-gate get pdb pdb-app -o wide || true
           kubectl -n pdb-gate get pods -o wide || true
-          if [ -z "$blocked" ]; then
-            echo "FAIL: 6 分钟内没有出现 PDB 拦截记录——L2 可能又退回直接 Delete 了"
+          if ! echo "$msg" | grep -q "L2 Isolate: evicted"; then
+            echo "FAIL: 6 分钟内没有出现 L2 Isolate: evicted 事件"
             kubectl -n pdb-gate get events --sort-by=.lastTimestamp | tail -30
             exit 1
           fi
-          echo "==> ok: L2 走了 eviction 并被 PDB 拦住，没有强删"
+          if echo "$msg" | grep -q "L2 Isolate: deleted"; then
+            echo "FAIL: L2 事件写的是 deleted —— 直接 Delete 回来了"
+            kubectl -n pdb-gate get events --sort-by=.lastTimestamp | tail -30
+            exit 1
+          fi
+          echo "==> ok: L2 走 eviction（事件 evicted / RBAC 有 pods/eviction / 源码无直接 Delete）"
 
       - name: Dump diagnostics on failure
         if: failure()

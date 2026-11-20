@@ -28,7 +28,7 @@
 | 状态真实性 | ✅ | `NAME sample PHASE Stable READY 2 DESIRED 2`；`status.conditions` 出现 `Available=True / Progressing=False` |
 | Events | ✅ | `kubectl get events --field-selector reason=KubeStasisReconcile` → `app available: 2/2 replicas ready` |
 | 控制器日志 | ✅ | `ERROR` 计数 = 0 |
-| CI | ✅ | 6 个 job 全绿：`docs`（链接有效性 + 文档一致性：用例数单一事实源、已完成项不得仍标"计划中"）/ `build`（gofmt+vet+build+test+`-race`，2026-11-05 加）/ `envtest`（真实 apiserver 控制循环回归，34s）/ `chart`（helm lint + 双形态渲染 + Chart CRD 与 controller-gen 产物逐字节 diff）/ `e2e` / `image`（多架构 + cosign 签名自验）。11-04 深夜最新：run [41842502428](https://github.com/weirong-ui/kubestasis/actions/runs/41842502428)，17m36s。e2e 覆盖三条链路：**P0**（部署+Available）+ **P3**（webhook 拒 `:latest`、replicas 跟随 minReplicas 默认值）+ **P2**（crash 镜像 → L2→L3 自动回滚 + 防乒乓断言） |
+| CI | ✅ | 6 个 job：`docs`（链接有效性 + 文档一致性：用例数单一事实源、已完成项不得仍标"计划中" + 实验脚本守卫）/ `build`（gofmt+vet+build+test+`-race` + 徽章用例数 = 真实 `--- PASS` 数）/ `envtest`（真实 apiserver 控制循环回归，4 条链路）/ `chart`（helm lint + 双形态渲染 + Chart CRD 与 controller-gen 产物逐字节 diff）/ `e2e` / `image`（多架构 + cosign 签名自验，仅在 e2e 通过后运行）。e2e 覆盖四条链路：**P0**（部署+Available）+ **P3**（webhook 拒 `:latest`、replicas 跟随 minReplicas 默认值）+ **P2**（crash 镜像 → L2→L3 自动回滚 + 防乒乓断言）+ **L2 eviction 回归**（事件写 `evicted` 而非旧实现的 `deleted`、RBAC 两份副本声明 `pods/eviction`、healer 源码无直接 Delete）。11-20 修订：Kubernetes 的 PDB 只保护 Ready Pod，L2 摘除的是未 Ready 的 CrashLoop Pod，eviction 不会被 429 拦截，故不再用「PDB 拒绝」当断言；最新 run 见仓库 Actions 页 |
 
 ## 三、三栏表：能力 / 真实状态 / 证据与缺口
 
