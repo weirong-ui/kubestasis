@@ -6,8 +6,10 @@
 
 ## 结论先说
 
-三条信号里有两条独立越线（QueueDepth、TTFT），KubeStasis 在 15 秒内把副本从 1 扩到 3；
-负载撤掉后按稳定窗口逐步缩回 1。**`KVCacheUsage` 全程没到阈值**，见 §4。
+首轮 QueueDepth 244 / TTFT p95 76s 越线，KubeStasis 把副本从 1 扩到 3，撤负载后按稳定
+窗口逐步缩回 1。同日补跑（§6）用单信号隔离让 **`KVCacheUsage` 也越过 0.85（峰值 1.000）**
+并独立驱动 `1 → 2 → 3`。至此三条信号**各自**都在真实指标上越线过、都触发过决策——
+不是同一轮负载里同时越线。
 
 ## 1. 环境
 
@@ -78,10 +80,11 @@ Kubernetes 事件（UTC，原文照抄）：
 - **扩出来的副本是装饰对象。** App 的 `image` 是 `nginx:1.27-alpine`，只被改 `replicas`，
   不承接任何推理流量。这份记录证明的是「三个信号 → 决策 → 副本数」这条链路在真实
   指标上通，**不是**「扩容改善了推理延迟」。后者这个项目从未验证，也不在本次范围内。
-- **KVCacheUsage 没触发。** 峰值 0.274，离 0.85 很远。原因很直接：1.5B 模型配 2048
-  上下文，KV 池有 309k token，500 并发、256 token 输出也只填到四分之一。要让这条信号
-  越线，得把上下文拉到 8k 以上或换成更大的模型——那会超出 T4 16G 的余量。所以三条信号
-  里实际起作用的是 QueueDepth 和 TTFT 两条。
+- **首轮 KVCacheUsage 没越线，补跑才越线。** 首轮峰值 0.274，离 0.85 很远：1.5B 模型配
+  2048 上下文，KV 池有 309k token，且 500 个并发请求共用同一份 prompt，被 prefix caching
+  合并了 KV。补跑靠「唯一前缀破缓存 + `ignore_eos` 拉长驻留」把占用率推到 1.000，细节见
+  §6。两轮合起来只能说「三条信号**各自**越线过」，不能说「同一轮里三条同时越线」——
+  首轮是 QueueDepth + TTFT，补跑只配了 KVCacheUsage 一条。
 - **只有一次运行，没有重复。** n=1，不构成统计结论，也别拿它算效应量。它的价值是
   「这套配置在真实 GPU 上跑得通，且决策确实发生」。
 
@@ -106,3 +109,79 @@ Kubernetes 事件（UTC，原文照抄）：
    `CreateOrUpdate`（先 Get 再 Create），报这个说明 informer 缓存还没同步到刚创建的对象，
    Get 拿到 NotFound、Create 撞上已存在。下一轮自行恢复（18:22:55 即 `1/1`），属自愈型
    竞态，不影响结论。
+8. **相同 prompt 会被 prefix caching 合并，KV 压不上去。** 补跑第一版 256 并发长 prompt
+   仍只有 0.268，`prefix_cache_hits_total / queries = 688704 / 806578 ≈ 85%`。每个请求在
+   prompt 开头加唯一前缀即可破坏共享（修正后 hits 停止增长）。
+9. **不加 `ignore_eos` 时模型会立刻收尾。** 实测 `completion_tokens=1`，KV 驻留太短压不住；
+   让它跑满 `max_tokens` 后单请求约 6.6 秒，占用率才能稳住。
+
+## 6. 补跑：让 `KVCacheUsage` 单独越线（同日 18:45–19:07）
+
+首轮 KV 峰值 0.274，是三条信号里唯一没越线的。补跑只回答一件事：**在真实指标上把
+`KVCacheUsage` 推过 0.85，并确认它能独立驱动决策**。口径与 §4 完全一致，不追求端到端弹性。
+
+### 6.1 为什么简单加并发压不动
+
+vLLM 的 scheduler 默认最多 256 个请求同时 running，超出的排队；而**排队请求不分配 KV
+block**。首轮 500 并发时 `running=159`、KV 仍只有 0.274。补跑改用 256 并发（正好填满
+running 槽）、每请求约 954 prompt token + 400 生成 token，让 256 个活跃序列同时占 KV。
+
+但第一版仍只到 0.268：`prefix_cache_hits_total / queries = 688704 / 806578 ≈ 85%`，
+256 个请求**共用同一份长 prompt**，被 prefix caching 合并成一份 KV。两处修正：
+
+- 每个请求在 prompt **最前面**加唯一前缀 `[r-<worker>-<seq>-<uuid>] `，让首个 KV block
+  就不相同，缓存无法共享（修正后 `prefix_cache_hits_total` 停止增长）；
+- 加 `ignore_eos: true`。否则模型撞 EOS 立刻收尾（实测 `completion_tokens=1`），KV 驻留
+  太短压不住；跑满 400 token 后单请求约 6.6 秒。
+
+### 6.2 单信号隔离
+
+App 的 `metrics` 只保留一条，扩容在逻辑上不可能由别的信号触发：
+
+```yaml
+metrics:
+  - type: KVCacheUsage
+    target: "0.85"
+```
+
+### 6.3 结果
+
+KV 占用时间序列（Prometheus 30 秒步长，`vllm:gpu_cache_usage_perc` 别名）：
+
+| 时刻 | KVCacheUsage | |
+|---|---|---|
+| 18:54:15 | 0.183 | |
+| 18:54:45 | 0.537 | |
+| 18:55:15 | 0.849 | 临界 |
+| 18:55:45 | **0.978** | 越线 |
+| 18:56:15 | **1.000** | 越线 |
+| 18:56:45 | **0.921** | 越线 |
+| 18:57:15 | 0.825 | 回落 |
+
+同时 `num_requests_running=224`、`num_requests_waiting=28`、`num_preemptions_total=27`
+—— KV 池确实被打满并开始抢占，不是数值凑出来的。负载脚本收尾 `ok=406, err=7`，
+7 个失败来自抢占/超时，属真实内存压力。
+
+Kubernetes 事件（UTC，原文照抄）：
+
+```
+2026-11-20T10:55:29Z  KubeStasisScaleUp  ScaleUp: 1 -> 2 (load above targets)
+2026-11-20T10:55:29Z  KubeStasisScaleUp  ScaleUp: 2 -> 3 (load above targets)
+```
+
+`1 → 2 → 3` 是逐步扩到 `maxReplicas`，与 `KVCacheUsage` 按比例换算一致
+（`inference_test.go` 中 `0.95/0.8 → 4×1.19 → 5` 那条）。
+
+### 6.4 撤载后为什么没缩回去（不是 bug）
+
+单信号配置下负载停止、KV 归零，但副本停在 3 不动。原因：KV 低于阈值时这条信号
+**健康弃权**（`inference_test.go:52`「KV cache 健康弃权」），没有任何信号给出有效建议，
+`Decide` 返回 `ActionNone` 保守保持现状。对照验证：把 App 恢复成三条 metric 后 32 秒内
+`3/3 → 1/1`，证明 controller 正常、这只是单信号隔离配置的行为。完整缩容闭环见 §3。
+
+### 6.5 边界不变
+
+补跑仍是 n=1，扩出的副本依旧是 `nginx` 装饰对象、不承接推理流量。能写的是
+「三条信号**各自**在真实指标上越线过、都触发过决策」；**不能**写「同一轮负载里三条
+同时越线」，更不能写端到端弹性或「扩容改善延迟」。
+
