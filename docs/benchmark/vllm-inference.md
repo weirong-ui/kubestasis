@@ -1,7 +1,10 @@
 # vLLM 推理信号实测：开工清单
 
-> **状态：尚未执行。** 本文是清单，不是报告。所有结果栏在真正跑完之前保持空白；
-> 不许填"预期值"，不许把计划写成结论。跑完实测值填进来，同时把这一行的状态改掉。
+> **状态：已执行一次（2026-11-20，腾讯云 T4 单卡）。** 结果与证据见
+> [vllm-inference-run-2026-11-20.md](vllm-inference-run-2026-11-20.md)：
+> 三条信号中 QueueDepth 与 TTFT 越线，副本 `1 → 3`；撤负载后按稳定窗口 `3 → 2 → 1`。
+> `KVCacheUsage` 峰值只到 0.27，未触发（原因见那份记录的 §4）。
+> 本文仍是可复现的开工清单，下面的结果栏保持空白，值以那份记录为准。
 >
 > **口径声明（先读这一条）**：单卡只能跑一个 vLLM。`1→3→1` 里多出来的两个副本
 > **不承接流量、不提供算力**，只是 Deployment 对象里的装饰对象。真实发生的是：
@@ -51,8 +54,12 @@ CRD 的 `MetricTarget` 只有 `Type` / `Target`，**没有 PromQL 覆盖字段**
 
 `histogram_quantile(rate(...[5m]))` 在样本不足时返回 NaN，而 `queryScalar` 把 NaN
 当作"无数据"返回 `ok=false`（`prometheus.go:285-288`）——同样是弃权。
-用 `PROMETHEUS_WINDOW=1m`（或 `--prometheus-window`），并让打流持续 ≥3 分钟，
+用 `--prometheus-window=1m` 这个 **flag**，并让打流持续 ≥3 分钟，
 别用 30 秒的脉冲流量。`QueueDepth` 是 `sum()` 不带 rate，不受这条影响。
+
+注意：**没有 `PROMETHEUS_WINDOW` 这个环境变量**。只有 `--prometheus-url` 读环境变量
+`PROMETHEUS_URL`，窗口只认 flag（`cmd/main.go:72`）。写成环境变量会被静默忽略、
+退回默认 5m，日志里能看到 `"window": "5m"`。
 
 ## 1. 环境与分工
 
@@ -161,7 +168,9 @@ nvidia-smi        # 必须看到 T4 和 "Driver Version: 580.x"
 **A. venv + pip**（跑在宿主机，§3.2 的 target 原样可用）
 
 ```bash
-sudo apt install -y python3-venv          # 24.04 默认没装这个包
+# python3.12-dev 不是可选项：torch 的 triton 后端要即时编译 kernel，缺 Python.h
+# 会直接 fatal error，engine 起不来（2026-11-20 实测踩过）
+sudo apt install -y python3-venv python3.12-dev build-essential
 python3 -m venv ~/vllm && source ~/vllm/bin/activate
 pip install vllm
 vllm serve Qwen/Qwen2.5-1.5B --port 8000 --max-model-len 2048 \
@@ -172,6 +181,20 @@ venv 建在家目录而不是 `/opt`，省掉 `sudo` 建目录、后来又要 `c
 Ubuntu 24.04 有 PEP 668，**必须在 venv 里装**。直接在系统 Python 上 `pip install`
 会报 `externally-managed-environment`；别用 `--break-system-packages` 图省事，
 这个实验不值得冒污染系统 Python 的险。
+
+**模型权重怎么下来**：内地机器连不上 huggingface.co，`hf-mirror.com` 能通但 hf-xet
+会卡死（下载停在中途、`.cache` 里零增长）。用 modelscope 最稳，实测 10–12 MB/s：
+
+```bash
+pip install modelscope
+python -c "from modelscope import snapshot_download; \
+print(snapshot_download('Qwen/Qwen2.5-1.5B', cache_dir='/home/ubuntu/ms'))"
+# 输出路径形如 /home/ubuntu/ms/models/Qwen--Qwen2.5-1.5B/snapshots/master
+vllm serve <上面的路径> --served-model-name Qwen/Qwen2.5-1.5B ...
+```
+
+注意要带 `--served-model-name` 对上 App 侧引用的模型名，否则 loadgen 里的 `model`
+字段对不上。香港地域直接 `vllm serve Qwen/Qwen2.5-1.5B` 让它自己下也行。
 
 **B. 官方 Docker 镜像**（需要先自己装 Docker + nvidia-container-toolkit，公共镜像不带）
 
@@ -217,9 +240,10 @@ scrape_configs:
 公共镜像**不含 Docker**，最省事的做法是直接用官方二进制，不装容器运行时：
 
 ```bash
-V=$(curl -s https://api.github.com/repos/prometheus/prometheus/releases/latest \
-  | grep -oP '"tag_name": "v\K[^"]+')
-curl -sLO "https://github.com/prometheus/prometheus/releases/download/v$V/prometheus-$V.linux-amd64.tar.gz"
+# 内地机器直连 GitHub Releases 大概率卡住（github.com 200、release 资源超时），
+# 走清华镜像；版本号按 LatestRelease 目录下的实际文件名改
+V=3.16.0
+curl -sLO "https://mirrors.tuna.tsinghua.edu.cn/github-release/prometheus/prometheus/LatestRelease/prometheus-$V.linux-amd64.tar.gz"
 tar xf "prometheus-$V.linux-amd64.tar.gz"
 sudo mkdir -p /etc/prometheus
 sudo cp prom.yml /etc/prometheus/prometheus.yml
@@ -243,6 +267,12 @@ groups:
         expr: vllm:kv_cache_usage_perc      # 换成 §2.B 查到的真实名字
 ```
 
+**vLLM 0.34 实测**：暴露的就是 `vllm:kv_cache_usage_perc`，上面这段原样可用；
+`num_requests_waiting` 和 `time_to_first_token_seconds_bucket` 的默认名没变。
+不配这条别名，KVCacheUsage 会一直返回空值、静默弃权——不报错，最难查。
+
+另外 `prom.yml` 里要加 `rule_files: [<alias.yml 绝对路径>]`，否则别名规则不会被加载。
+
 **验收**：`curl -s 'http://localhost:9090/api/v1/query?query=vllm:num_requests_waiting{app="vllm",namespace="vllm"}'`
 必须返回非空 `result`。这一步不过，后面全部白跑。
 
@@ -258,9 +288,12 @@ curl -s 'http://127.0.0.1:9090/api/v1/query?query=up' | head -c 200
 ```bash
 kubectl apply -k config/crd
 kubectl create namespace vllm --dry-run=client -o yaml | kubectl apply -f -
-PROMETHEUS_URL=http://127.0.0.1:9090 PROMETHEUS_WINDOW=1m \
-  go run ./cmd --enable-webhook=false
+PROMETHEUS_URL=http://127.0.0.1:9090 \
+  go run ./cmd --enable-webhook=false --prometheus-window=1m
 ```
+
+窗口是 **flag**，不是环境变量——别写成 `PROMETHEUS_WINDOW=1m`，那个名字代码里不读，
+会静默退回 5m（见 §0.3）。
 
 不启 webhook：这次不测准入，省掉自签证书那套。`go run` 跑在宿主机，
 `127.0.0.1:9090` 就是隧道，没有容器网络问题。
