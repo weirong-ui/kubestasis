@@ -59,9 +59,9 @@ type ScalingPolicy struct {
     CooldownSeconds         int            `json:"cooldownSeconds"`
     Metrics                 []MetricTarget `json:"metrics,omitempty"`
     ScaleDownStepPercent    int            `json:"scaleDownStepPercent,omitempty"`    // 默认 20
-    HysteresisPercent       int            `json:"hysteresisPercent,omitempty"`       // 默认 10
+    HysteresisPercent       *int32         `json:"hysteresisPercent,omitempty"`       // 默认 10，0 关闭
     ErrorRateScaleUpPercent int            `json:"errorRateScaleUpPercent,omitempty"` // 默认 20
-    ScaleDownStabilizationSeconds int      `json:"scaleDownStabilizationSeconds,omitempty"` // 默认 60，0 关闭
+    ScaleDownStabilizationSeconds *int32   `json:"scaleDownStabilizationSeconds,omitempty"` // 默认 60，0 关闭
 }
 
 type MetricType string // QPS | P99Latency | ErrorRate       —— 通用业务信号
@@ -201,7 +201,7 @@ Apply 写 spec 会立刻触发下一轮 Reconcile，而 informer cache 里可能
 
 | 层级 | 工具 | 覆盖内容 | 现状 |
 |---|---|---|---|
-| 单元 | go test + fake client | Scaler 决策表、Healer 状态机、Webhook 校验规则、mini-Informer、指标埋点 | ✅ 143 用例 |
+| 单元 | go test + fake client | Scaler 决策表、Healer 状态机、Webhook 校验规则、mini-Informer、指标埋点 | ✅ 149 用例 |
 | 集成 | envtest（真实 apiserver + etcd） | Reconcile 全流程、Finalizer、Status 更新、副本漂移拉回 | ✅ 4 条链路（CI `envtest` job） |
 | 混沌 | kind 集群脚本（CI） | 杀 Pod / CrashLoop 版本发布 / 金丝雀错误率，验证自愈与回滚 | ✅ 覆盖 P0/P2/P3 |
 

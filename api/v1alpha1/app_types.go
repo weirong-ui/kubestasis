@@ -106,11 +106,16 @@ type ScalingPolicy struct {
 	ScaleDownStepPercent int `json:"scaleDownStepPercent,omitempty"`
 
 	// HysteresisPercent 迟滞带：期望副本与当前副本差值 ≤ max(1, current×p%) 时不动作。
+	// 0 表示关闭迟滞带（逐轮收敛，压测用）。
+	//
+	// 为什么用指针：与下面的稳定窗口同因。int + omitempty 会把显式写的 0
+	// 从 mutating webhook 的 patch 里删掉，再被 CRD 默认值改回 10，
+	// 于是"关掉迟滞带"这个动作永远表达不出来。实验记录见 docs/lab。
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=50
 	// +kubebuilder:default=10
 	// +optional
-	HysteresisPercent int `json:"hysteresisPercent,omitempty"`
+	HysteresisPercent *int32 `json:"hysteresisPercent,omitempty"`
 
 	// ScaleDownStabilizationSeconds 缩容稳定窗口：信号必须连续低于目标超过该秒数，
 	// 才允许缩容（任一采样回到目标以上就重新计时）。默认 60s，即 15s 巡检下约 4 轮。
@@ -144,12 +149,16 @@ func (p *ScalingPolicy) ScaleDownStep() int {
 	return p.ScaleDownStepPercent
 }
 
-// Hysteresis 返回迟滞带比例；0 时回退到 10。
+// Hysteresis 返回迟滞带比例。
+// 只有字段为 nil 时才回退到默认 10；显式写的 0 是合法值，表示关闭迟滞带。
 func (p *ScalingPolicy) Hysteresis() int {
-	if p == nil || p.HysteresisPercent <= 0 {
+	if p == nil || p.HysteresisPercent == nil {
 		return 10
 	}
-	return p.HysteresisPercent
+	if *p.HysteresisPercent < 0 {
+		return 0
+	}
+	return int(*p.HysteresisPercent)
 }
 
 // ErrorRateStep 返回错误率扩容比例；0 时回退到 20。

@@ -51,6 +51,15 @@ test-envtest: ## 控制循环级集成测试（需 setup-envtest 下载的二进
 	KUBESTASIS_REQUIRE_ENVTEST=1 KUBEBUILDER_ASSETS=$$(cat .envtest-path) \
 		$(GO) test ./test/envtest/... -v -count=1
 
+lab: ## 列出实验脚本（hack/lab），跑单个：bash hack/lab/exp5.sh
+	@echo "单个实验: bash hack/lab/<脚本> [--keep]"
+	@echo "只验证守卫: LAB_GUARD_ONLY=1 bash hack/lab/<脚本>"
+	@echo ""
+	@grep -h '^# 实验' hack/lab/exp*.sh | sed 's/^# /  /'
+
+lab-check: ## 实验脚本守卫（不连集群，CI 也跑）
+	bash hack/lab/check.sh
+
 ##@ Build
 build: ## 编译二进制
 	$(GO) build -o bin/kubestasis ./cmd

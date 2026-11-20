@@ -235,13 +235,20 @@ func TestDecide_ClampsToMinMax(t *testing.T) {
 			t.Fatalf("want clamped to 20, got %d", d.ToReplicas)
 		}
 	})
-	t.Run("全信号无数据逐步缩回 min（不卡死也不瞬间到底）", func(t *testing.T) {
+	t.Run("全信号无数据时保持当前副本", func(t *testing.T) {
+		// 这条断言 2026-11-18 翻转。原来写的是"逐步缩回 min（不卡死也不瞬间到底）"，
+		// 它把 bug 固化成了预期行为：desired 初值取 minReplicas、弃权就 continue，
+		// 于是"没有任何数据"和"负载为零"走出了同一条收敛路径，只是速度慢一点。
+		// 集群侧复现见 docs/lab/exp5：六分钟 5→2，事件写 load below targets。
 		e := NewEngine().WithMetricsSource(fakeSource{vals: map[appsv1alpha1.MetricType]fakeVal{
 			appsv1alpha1.MetricQPS: {0, false}, // 无数据：跳过，不是 0
 		}})
 		d := e.Decide(context.Background(), newApp(6, 2, 20, 0, qpsTarget()), func() time.Time { return frozen })
-		if d.Action != ActionScaleDown || d.ToReplicas != 4 {
-			t.Fatalf("want ScaleDown 6->4 (gradual toward min=2), got %s->%d", d.Action, d.ToReplicas)
+		if d.Action != ActionNone || d.ToReplicas != 6 {
+			t.Fatalf("want hold 6 replicas, got %s->%d", d.Action, d.ToReplicas)
+		}
+		if d.ReasonCode != ReasonNoMetricsData {
+			t.Fatalf("reason code = %q, want %q", d.ReasonCode, ReasonNoMetricsData)
 		}
 	})
 }
@@ -258,6 +265,80 @@ func TestDecide_MultiSignalTakesMax(t *testing.T) {
 	d := e.Decide(context.Background(), app, func() time.Time { return frozen })
 	if d.ToReplicas != 12 {
 		t.Fatalf("want max(4,12)=12, got %d", d.ToReplicas)
+	}
+}
+
+// TestDecide_AllSignalsAbstain_HoldsReplicas 锁住一个真实 bug（2026-11-18 实验发现，
+// 集群侧复现见 docs/lab/exp5）：Prometheus 整个挂掉时每个信号都返回 ok=false，
+// 旧实现让 desired 停在 minReplicas，稳定窗口一过就按步长一路缩到 min。
+// 六分钟把 5 副本缩到 2，而事件写的是 "load below targets"、原因码是 scale_down，
+// 和正常缩容完全无法区分——把"查不到"当成了"需求很低"。
+func TestDecide_AllSignalsAbstain_HoldsReplicas(t *testing.T) {
+	// 稳定窗口与冷却都关掉：旧实现这两道闸都不拦，第一轮就会缩
+	app := newApp(5, 1, 10, 0, qpsTarget())
+	e := NewEngine().WithMetricsSource(fakeSource{vals: map[appsv1alpha1.MetricType]fakeVal{
+		appsv1alpha1.MetricQPS: {0, false},
+	}})
+
+	d := e.Decide(context.Background(), app, func() time.Time { return frozen })
+
+	if d.Action != ActionNone || d.ToReplicas != 5 {
+		t.Fatalf("all signals abstained must hold 5 replicas, got %s -> %d", d.Action, d.ToReplicas)
+	}
+	if d.ReasonCode != ReasonNoMetricsData {
+		t.Fatalf("reason code = %q, want %q：这个码必须能和正常缩容区分开，否则排障看不出故障",
+			d.ReasonCode, ReasonNoMetricsData)
+	}
+	if !d.BelowTarget.Set {
+		t.Fatalf("abstain must clear the stabilization timer (no evidence of a lull), got %+v", d.BelowTarget)
+	}
+}
+
+// TestDecide_PartialAbstain_StillScales 反向约束：只有一个信号没数据时不能整体停摆，
+// 另一个信号知道需求，就照它决策。守卫只该覆盖"全都没有"这一种情况。
+func TestDecide_PartialAbstain_StillScales(t *testing.T) {
+	e := NewEngine().WithMetricsSource(fakeSource{vals: map[appsv1alpha1.MetricType]fakeVal{
+		appsv1alpha1.MetricQPS:       {0, false},
+		appsv1alpha1.MetricErrorRate: {8, true},
+	}})
+	app := newApp(10, 2, 20, 0, qpsTarget(),
+		appsv1alpha1.MetricTarget{Type: appsv1alpha1.MetricErrorRate, Target: "0.01"})
+
+	d := e.Decide(context.Background(), app, func() time.Time { return frozen })
+
+	if d.Action != ActionScaleDown || d.ToReplicas != 8 {
+		t.Fatalf("one live signal must still drive the decision, want ScaleDown->8, got %s -> %d",
+			d.Action, d.ToReplicas)
+	}
+	if d.ReasonCode == ReasonNoMetricsData {
+		t.Fatalf("partial abstain must not be reported as no metrics data")
+	}
+}
+
+// TestDecide_ZeroHysteresisDisablesBand 验证 0 是"关闭"而不是"没设置"。
+// API 层还有一道：该字段曾是 int + omitempty，显式写的 0 会被 mutating webhook
+// 从 patch 里删掉、再被 CRD 默认值改回 10（见 api/v1alpha1 的 HysteresisPercent 注释）。
+func TestDecide_ZeroHysteresisDisablesBand(t *testing.T) {
+	tests := []struct {
+		name string
+		hyst *int32
+		want Action
+	}{
+		{"显式 0 关闭带宽：差值 1 直接缩", int32Ptr3(0), ActionScaleDown},
+		{"未设置走默认 10：差值 1 落在带内不动作", nil, ActionNone},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			app := newApp(10, 2, 20, 0, qpsTarget())
+			app.Spec.Scaling.HysteresisPercent = tc.hyst
+			e := NewEngine().WithMetricsSource(fakeSource{vals: map[appsv1alpha1.MetricType]fakeVal{
+				appsv1alpha1.MetricQPS: {9, true},
+			}})
+			d := e.Decide(context.Background(), app, func() time.Time { return frozen })
+			if d.Action != tc.want {
+				t.Fatalf("want %s, got %s -> %d (%s)", tc.want, d.Action, d.ToReplicas, d.Reason)
+			}
+		})
 	}
 }
 

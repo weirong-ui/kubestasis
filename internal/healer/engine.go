@@ -35,6 +35,8 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -334,25 +336,60 @@ func (e *Engine) scaleUp(ctx context.Context, c client.Client, app *appsv1alpha1
 // errAtLimit 内部哨兵：副本已到上限时用它跳出 RetryOnConflict（它不是可重试错误）。
 var errAtLimit = fmt.Errorf("replicas already at max")
 
-// isolate L2：删除不健康 Pod。Deployment 会立刻补新实例——等价于"摘除坏副本"，
+// isolate L2：摘除不健康 Pod。Deployment 会立刻补新实例——等价于"摘除坏副本"，
 // 但不需要动 Service selector（打标签摘除的方案在 Pod 被重建后标签会丢，反而不可靠）。
+//
+// 走 eviction 子资源而不是直接 Delete：Delete Pod 属于**非自愿中断**，
+// PodDisruptionBudget 完全不参与。一次配置错误让多个副本同时 CrashLoop 时，
+// 裸 Delete 会在同一轮把它们一起删掉，期间服务没有任何后端（单副本 App 就是直接归零）。
+// eviction 会经过 PDB 的预算计算：此刻不允许再减少可用副本就返回 429。
+//
+// 拿到 429 的正确反应是**停手等下一轮**，而不是换条路硬删——PDB 的意义正是
+// "宁可慢，也不要在最脆的时候再掉一个"。所以这里不降级、不回退到 Delete。
+// 一个都没摘成时仍然返回 Action（不是错误），让观察期照常开始；冷却期内故障
+// 再现会升级到 L3，回滚比在预算上硬闯更可能真正解决问题。
 func (e *Engine) isolate(ctx context.Context, c client.Client, app *appsv1alpha1.App,
 	pods []string, now time.Time) (*Action, error) {
 
 	if len(pods) == 0 {
 		return nil, nil
 	}
-	deleted := 0
+
+	evicted := 0
+	var blocked []string
 	for _, name := range pods {
 		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: app.Namespace}}
-		if err := c.Delete(ctx, pod); err != nil {
-			return nil, fmt.Errorf("L2 delete pod %s: %w", name, err)
+		eviction := &policyv1.Eviction{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: app.Namespace},
 		}
-		deleted++
+		err := c.SubResource("eviction").Create(ctx, pod, eviction)
+		switch {
+		case err == nil:
+			evicted++
+		case apierrors.IsNotFound(err):
+			// 已被上一轮动作或节点回收删掉：目标状态已达成，不算失败
+		case apierrors.IsTooManyRequests(err):
+			// PDB 拒绝。其余 Pod 面对同一个预算，继续试只会重复拿 429，本轮到此为止。
+			blocked = append(blocked, name)
+		default:
+			return nil, fmt.Errorf("L2 evict pod %s: %w", name, err)
+		}
+		if len(blocked) > 0 {
+			break
+		}
+	}
+
+	if len(blocked) > 0 {
+		return &Action{
+			Level: L2Isolate, Name: "Isolate",
+			Detail: fmt.Sprintf("evicted %d of %d unhealthy pod(s); rest blocked by pod disruption budget (will escalate after cooldown): %v",
+				evicted, len(pods), blocked),
+			Timestamp: now,
+		}, nil
 	}
 	return &Action{
 		Level: L2Isolate, Name: "Isolate",
-		Detail:    fmt.Sprintf("deleted %d unhealthy pod(s): %v", deleted, pods),
+		Detail:    fmt.Sprintf("evicted %d unhealthy pod(s): %v", evicted, pods),
 		Timestamp: now,
 	}, nil
 }

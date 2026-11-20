@@ -55,7 +55,7 @@ func TestDecide_CustomScaleDownStep(t *testing.T) {
 	// 同时收窄迟滞带，让断言只体现步长一个变量。
 	app := newApp(10, 1, 20, 0, appsv1alpha1.MetricTarget{Type: appsv1alpha1.MetricQPS, Target: "100"})
 	app.Spec.Scaling.ScaleDownStepPercent = 50
-	app.Spec.Scaling.HysteresisPercent = 1
+	app.Spec.Scaling.HysteresisPercent = int32Ptr3(1)
 	d := NewEngine().WithMetricsSource(fakeSource{vals: map[appsv1alpha1.MetricType]fakeVal{
 		appsv1alpha1.MetricQPS: {1, true},
 	}}).Decide(context.Background(), app, func() time.Time { return frozen })
@@ -68,7 +68,7 @@ func TestDecide_CustomHysteresis(t *testing.T) {
 	// hysteresisPercent=50：current=10 时带宽为 5。
 	// 缩容 desired=6（差 4）落在带内 → 不动作；扩容 desired=14（差 4）必须直通。
 	app := newApp(10, 1, 20, 0, appsv1alpha1.MetricTarget{Type: appsv1alpha1.MetricQPS, Target: "100"})
-	app.Spec.Scaling.HysteresisPercent = 50
+	app.Spec.Scaling.HysteresisPercent = int32Ptr3(50)
 
 	down := NewEngine().WithMetricsSource(fakeSource{vals: map[appsv1alpha1.MetricType]fakeVal{
 		appsv1alpha1.MetricQPS: {6, true},

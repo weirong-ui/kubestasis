@@ -410,8 +410,14 @@ spec:
                     type: integer
                   hysteresisPercent:
                     default: 10
-                    description: HysteresisPercent 迟滞带：期望副本与当前副本差值 ≤ max(1, current×p%)
-                      时不动作。
+                    description: |-
+                      HysteresisPercent 迟滞带：期望副本与当前副本差值 ≤ max(1, current×p%) 时不动作。
+                      0 表示关闭迟滞带（逐轮收敛，压测用）。
+
+                      为什么用指针：与下面的稳定窗口同因。int + omitempty 会把显式写的 0
+                      从 mutating webhook 的 patch 里删掉，再被 CRD 默认值改回 10，
+                      于是"关掉迟滞带"这个动作永远表达不出来。实验记录见 docs/lab。
+                    format: int32
                     maximum: 50
                     minimum: 0
                     type: integer
