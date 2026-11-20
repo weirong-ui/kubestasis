@@ -21,7 +21,7 @@ kubectl apply -f config/samples/app_v1alpha1_app.yaml
 **定位**：不是 HPA 替代品，也不打算被生产采用。它是一个把"看指标伸缩 + 看故障自愈 + 准入期兜住错误配置"放进同一个控制回路的实现研究，每条能力附可复算的证据和失败记录。什么时候该用、什么时候不该用，见下一节。
 
 [![CI](https://github.com/weirong-ui/kubestasis/actions/workflows/ci.yml/badge.svg)](https://github.com/weirong-ui/kubestasis/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-143%20cases-brightgreen)](docs/STATUS.md)
+[![Tests](https://img.shields.io/badge/tests-149%20cases-brightgreen)](docs/STATUS.md)
 [![Go](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
@@ -33,10 +33,10 @@ kubectl apply -f config/samples/app_v1alpha1_app.yaml
 | 分级自愈 | [crash 版本发布 → L2 摘除 → L3 按 ReplicaSet 回滚](docs/demo/02-self-healing.md)（CI 里有同链路回归断言） |
 | vs 原生 HPA | [同镜像、同资源、同流量时间线的压测对比](docs/benchmark/hpa-vs-kubestasis.md)（副本-分钟 −12.5%；扩容响应的方差问题、五轮废数据的逐轮归因、输掉的两项都写在里面；原始 CSV 可复算；重复实验的判定线在跑之前就写死了（[协议](docs/benchmark/d2a-protocol.md)），跑完回来改数） |
 | 可观测性 | [Grafana 面板实测截图](deploy/monitoring/README.md)——4 行 16 个面板，含一次真实的 2→1→2（稳定窗口挡缩容、到点缩、再扩）；同目录还有录制规则与"伸缩引擎休眠"告警 |
-| AI 推理信号 | [vLLM 实测开工清单](docs/benchmark/vllm-inference.md)——**尚未执行**；三个信号目前只有单测覆盖，STATUS 里如实标着未实测 |
+| AI 推理信号 | [实测记录](docs/benchmark/vllm-inference-run-2026-11-20.md)：真实 vLLM + 单卡 T4 上 QueueDepth 244 / TTFT p95 76s 越线，副本 `1 → 3 → 2 → 1`；补跑单信号隔离让 KVCacheUsage 峰值 1.000 越线、独立触发 `1 → 2 → 3`。三条信号各自在真指标上触发过决策（非同一轮同时越线）。n=1，扩出的副本不承接流量，不是端到端弹性 |
 | 全部能力/限制/踩坑 | [docs/STATUS.md](docs/STATUS.md)（唯一可信账本，含"已知不解决的问题"） |
 
-CI 六道门：`docs`（链接有效性）/ `build`（gofmt + vet + 143 用例 + `-race` 数据竞争检测）/ `envtest`（真实 apiserver 的控制循环回归，4 条链路）/ `chart`（helm lint + 双形态渲染 + CRD 逐字节 diff）/ `e2e`（kind 真集群跑通伸缩、自愈、Webhook 负向用例）/ `image`（多架构 + cosign 签名）。
+CI 六道门：`docs`（链接有效性）/ `build`（gofmt + vet + 149 用例 + `-race` 数据竞争检测）/ `envtest`（真实 apiserver 的控制循环回归，4 条链路）/ `chart`（helm lint + 双形态渲染 + CRD 逐字节 diff）/ `e2e`（kind 真集群跑通伸缩、自愈、Webhook 负向用例）/ `image`（多架构 + cosign 签名）。
 
 ## 什么时候该用，什么时候不该用
 
@@ -220,7 +220,7 @@ HOW-TO-START.md      从这套材料起步的步骤说明
 ```bash
 make run                 # 本地跑（连当前 kubeconfig）
 make manifests generate  # 重新生成 CRD/RBAC/DeepCopy
-go test ./... -cover     # 单元测试（143 用例）
+go test ./... -cover     # 单元测试（149 用例）
 ```
 
 ## Roadmap

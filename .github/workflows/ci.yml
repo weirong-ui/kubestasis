@@ -33,6 +33,10 @@ jobs:
         # 起因：README 徽章 139、同文件开发节 113、DESIGN 里 envtest 还写"计划中"。
         # 一个主打"文档即账本"的项目，账本自己对不上是硬伤；人工核对漏过一次，改机器查。
         run: python3 hack/doc_consistency.py
+      - name: 实验脚本守卫
+        # hack/lab 里每个脚本都必须装命名空间白名单。2026-11-18 那次教训：
+        # "停掉 Prometheus 看会怎样"会毁掉没有 PVC 的压测数据，靠"记得小心"不可靠。
+        run: bash hack/lab/check.sh
 
   # 校验代码可编译、可格式、可测试。
   # 注意：条件判断必须写在 step 级——写在 job 级 if 里的非法表达式会让整份 workflow 校验失败，
@@ -60,6 +64,19 @@ jobs:
         run: go build ./...
       - name: go test
         run: go test ./... -coverprofile=coverage.out -covermode=atomic
+      - name: 徽章用例数 = 真实 go test 输出
+        # 2026-11-20 合并预演：文档各处都写 144，真实 --- PASS 是 149。
+        # doc_consistency 只比「文档对文档」，比不出「文档对代码」；docs job 没装 Go，
+        # 所以这一步放 build job（本来就有 Go、本来就要跑 go test）。
+        # 包集合与 STATUS 的分解口径一致：internal/... + pkg/...（不含 test/envtest）。
+        run: |
+          actual=$(go test ./internal/... ./pkg/... -v -count=1 2>/dev/null | grep -c -- "--- PASS")
+          badge=$(grep -oE 'tests-[0-9]+' README.md | head -1 | grep -oE '[0-9]+')
+          if [ "$actual" != "$badge" ]; then
+            echo "徽章写 $badge 用例，真实 go test 输出 $actual 条 --- PASS"
+            exit 1
+          fi
+          echo "ok: 徽章 $badge = 真实 $actual"
       - name: go test -race
         # 数据竞争不崩溃、不报错，只在特定并发时序下悄悄算错数
         # （实例：Decide() 曾有的 e.nowFunc = nowFn，当时只因默认并发=1 才没炸）。
@@ -228,6 +245,69 @@ jobs:
           done
           kubectl wait --for=condition=Available app/heal-demo --timeout=240s
           echo "==> 自愈完成：回滚后恢复 Available 且未乒乓"
+      # ---------- L2 必须经过 PDB（11.20 回归门） ----------
+      # 旧实现是 c.Delete(ctx, pod)：Delete 属于非自愿中断，PDB 完全不参与，
+      # 一次多副本故障会在同一轮被删光。单测证明不了这件事——fake client 的
+      # eviction 最终也是 Delete，不会执行预算计算。只有真 apiserver 才给 429。
+      - name: L2 must respect PodDisruptionBudget
+        run: |
+          set -e
+          kubectl create ns pdb-gate
+          cat > /tmp/pdb-app.yaml <<'EOF'
+          apiVersion: kubestasis.io/v1alpha1
+          kind: App
+          metadata:
+            name: pdb-app
+            namespace: pdb-gate
+          spec:
+            image: kubestasis-demoapp:v1
+            replicas: 3
+            port: 8080
+            health:
+              strategy: graduated
+          EOF
+          kubectl apply -f /tmp/pdb-app.yaml
+          kubectl -n pdb-gate wait --for=condition=Available app/pdb-app --timeout=240s
+
+          # minAvailable 100%：滚动发布的 surge Pod 也算进期望副本，
+          # 只要有一个副本不健康，disruptionsAllowed 就是 0
+          cat > /tmp/pdb.yaml <<'EOF'
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: pdb-app
+            namespace: pdb-gate
+          spec:
+            minAvailable: 100%
+            selector:
+              matchLabels:
+                app: pdb-app
+          EOF
+          kubectl apply -f /tmp/pdb.yaml
+          kubectl -n pdb-gate get pdb pdb-app
+
+          echo "==> 发布 crash 版本，期望：L2 走 eviction 被 PDB 拒绝（429），事件里留痕"
+          kubectl -n pdb-gate patch app pdb-app --type=merge \
+            -p '{"spec":{"image":"kubestasis-demoapp:v2-crash"}}'
+
+          blocked=""
+          for i in $(seq 1 36); do
+            msg=$(kubectl -n pdb-gate get events --field-selector reason=KubeStasisHealAction \
+              -o jsonpath='{range .items[*]}{.message}{"\n"}{end}' 2>/dev/null || true)
+            if echo "$msg" | grep -q "disruption budget"; then
+              blocked="yes"; echo "$msg" | grep "disruption budget"; break
+            fi
+            sleep 10
+          done
+          kubectl -n pdb-gate get pdb pdb-app -o wide || true
+          kubectl -n pdb-gate get pods -o wide || true
+          if [ -z "$blocked" ]; then
+            echo "FAIL: 6 分钟内没有出现 PDB 拦截记录——L2 可能又退回直接 Delete 了"
+            kubectl -n pdb-gate get events --sort-by=.lastTimestamp | tail -30
+            exit 1
+          fi
+          echo "==> ok: L2 走了 eviction 并被 PDB 拦住，没有强删"
+
       - name: Dump diagnostics on failure
         if: failure()
         run: |

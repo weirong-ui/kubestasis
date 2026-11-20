@@ -51,6 +51,7 @@ const (
 const (
 	ReasonNoPolicy        = "no_policy"
 	ReasonNoMetricsSource = "no_metrics_source"
+	ReasonNoMetricsData   = "no_metrics_data"
 	ReasonHysteresis      = "hysteresis"
 	ReasonStabilizing     = "stabilizing"
 	ReasonCooldown        = "cooldown"
@@ -159,15 +160,29 @@ func (e *Engine) Decide(ctx context.Context, app *appsv1alpha1.App, nowFn func()
 	}
 
 	// 多信号取最紧急者
+	anySignal := false
 	for _, m := range policy.Metrics {
 		want, ok := e.source.DesiredReplicas(ctx, app, m, current)
 		if !ok {
 			continue // 该信号暂时没有数据，跳过而不是当成 0
 		}
+		anySignal = true
 		signals[m.Type] = want
 		if want > desired {
 			desired = want
 		}
+	}
+
+	// 所有信号都弃权：此刻唯一确定的事实是"不知道需求是多少"。
+	// 不能把 desired 留在 minReplicas 上往下走——Prometheus 整个挂掉时，
+	// 稳定窗口一过就会按步长一路缩到 min，而且原因码是 scale_down、
+	// 事件写的是 "load below targets"，和正常缩容一模一样。
+	// 拿缺失当低谷，是比缩得激进更坏的事：故障被伪装成了正常决策。
+	if !anySignal {
+		return Decision{Action: ActionNone, FromReplicas: current, ToReplicas: current,
+			Reason:     "no metrics data: every signal abstained, holding replicas",
+			ReasonCode: ReasonNoMetricsData, Signals: signals,
+			BelowTarget: clearedBelowTarget()}
 	}
 
 	// 约束上下限
@@ -185,7 +200,12 @@ func (e *Engine) Decide(ctx context.Context, app *appsv1alpha1.App, nowFn func()
 	// 于是突发流量下少一个副本（约 62 QPS 承载），2 分钟多出几百个失败请求。
 	// 而震荡的根源从来不是"该扩的时候扩了"，而是"刚扩完就缩"。
 	// 所以死区只该出现在收缩方向：扩要快（保可用性），缩要稳（保稳定）。
-	hysteresis := int32(math.Max(1, float64(current)*float64(policy.Hysteresis())/100))
+	// 迟滞带宽：0 表示显式关闭（逐轮收敛）。注意不能写成 math.Max(1, ...)，
+	// 那会让 0 也留下 1 个副本的死区，"关闭"就关不干净。
+	var hysteresis int32
+	if pct := policy.Hysteresis(); pct > 0 {
+		hysteresis = int32(math.Max(1, float64(current)*float64(pct)/100))
+	}
 	// 例外：回落到 minReplicas 不受迟滞带约束，否则 3 副本时永远缩不回 2
 	backToMin := desired == policy.MinReplicas && current > policy.MinReplicas
 	if desired < current && current-desired <= hysteresis && !backToMin {

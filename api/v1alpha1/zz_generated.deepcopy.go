@@ -244,6 +244,11 @@ func (in *ScalingPolicy) DeepCopyInto(out *ScalingPolicy) {
 		*out = make([]MetricTarget, len(*in))
 		copy(*out, *in)
 	}
+	if in.HysteresisPercent != nil {
+		in, out := &in.HysteresisPercent, &out.HysteresisPercent
+		*out = new(int32)
+		**out = **in
+	}
 	if in.ScaleDownStabilizationSeconds != nil {
 		in, out := &in.ScaleDownStabilizationSeconds, &out.ScaleDownStabilizationSeconds
 		*out = new(int32)

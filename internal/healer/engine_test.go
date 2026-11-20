@@ -18,15 +18,18 @@ package healer
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	appsv1alpha1 "github.com/weirong-ui/kubestasis/api/v1alpha1"
@@ -205,14 +208,15 @@ func TestApply_L1ScalesUpSpecWithCap(t *testing.T) {
 	}
 }
 
-func TestApply_L2DeletesUnhealthyPods(t *testing.T) {
+func TestApply_L2EvictsUnhealthyPods(t *testing.T) {
 	app := newApp("demo", 2)
 	bad := newPod("bad-1", "demo", nil)
 	good := newPod("good-1", "demo", nil)
-	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(app, bad, good).Build()
+	inner := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(app, bad, good).Build()
+	spy := &evictionSpy{Client: inner}
 
 	report := Report{Unhealthy: true, SuggestedLevel: L2Isolate, Pods: []string{"bad-1"}}
-	action, err := newEngine().Apply(context.Background(), c, app, newDeploy("demo", "demo:v1"), report)
+	action, err := newEngine().Apply(context.Background(), spy, app, newDeploy("demo", "demo:v1"), report)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,12 +224,99 @@ func TestApply_L2DeletesUnhealthyPods(t *testing.T) {
 		t.Fatalf("want L2 action, got %v", action)
 	}
 	var pods corev1.PodList
-	if err := c.List(context.Background(), &pods); err != nil {
+	if err := inner.List(context.Background(), &pods); err != nil {
 		t.Fatal(err)
 	}
 	if len(pods.Items) != 1 || pods.Items[0].Name != "good-1" {
-		t.Fatalf("bad pod should be deleted, remaining: %v", pods.Items)
+		t.Fatalf("bad pod should be evicted, remaining: %v", pods.Items)
 	}
+	// 关键断言：必须走 eviction 子资源。直接 Delete 属于非自愿中断，PDB 不参与，
+	// 一次多副本故障会被一轮删光（集群侧证据见 docs/lab/exp8）。
+	if spy.evictions != 1 {
+		t.Fatalf("eviction subresource calls = %d, want 1（L2 不能退化成 Delete）", spy.evictions)
+	}
+}
+
+// TestApply_L2StopsWhenPDBBlocks 验证 PDB 拒绝时的行为：停手，不硬闯。
+// 集群侧的对照（同一时刻 eviction 拿 429、裸 Delete 照样成功）见 docs/lab/exp8。
+func TestApply_L2StopsWhenPDBBlocks(t *testing.T) {
+	app := newApp("demo", 2)
+	bad1 := newPod("bad-1", "demo", nil)
+	bad2 := newPod("bad-2", "demo", nil)
+	inner := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(app, bad1, bad2).Build()
+
+	report := Report{Unhealthy: true, SuggestedLevel: L2Isolate, Pods: []string{"bad-1", "bad-2"}}
+	action, err := newEngine().Apply(context.Background(), &pdbBlocking{Client: inner},
+		app, newDeploy("demo", "demo:v1"), report)
+	if err != nil {
+		t.Fatalf("PDB 拒绝不是错误，应该走正常的观察期: %v", err)
+	}
+	if action == nil || action.Level != L2Isolate {
+		t.Fatalf("want L2 action recording the block, got %v", action)
+	}
+	if !strings.Contains(action.Detail, "disruption budget") {
+		t.Fatalf("detail must say why nothing happened: %q", action.Detail)
+	}
+	// 一个都不能被删：400 多个 Pod 的预算不允许时，删掉一个就是超支
+	var pods corev1.PodList
+	if err := inner.List(context.Background(), &pods); err != nil {
+		t.Fatal(err)
+	}
+	if len(pods.Items) != 2 {
+		t.Fatalf("PDB blocked eviction, pods must stay: %d left", len(pods.Items))
+	}
+}
+
+// evictionSpy 记录有多少次摘除走了 eviction 子资源。
+// fake client 的 eviction 最终也是 Delete，光看"Pod 没了"分辨不出走的哪条路。
+type evictionSpy struct {
+	client.Client
+	evictions int
+}
+
+func (s *evictionSpy) SubResource(sub string) client.SubResourceClient {
+	inner := s.Client.SubResource(sub)
+	if sub == "eviction" {
+		return &evictionRecorder{SubResourceClient: inner, spy: s}
+	}
+	return inner
+}
+
+type evictionRecorder struct {
+	client.SubResourceClient
+	spy *evictionSpy
+}
+
+func (r *evictionRecorder) Create(ctx context.Context, obj, subResource client.Object,
+	opts ...client.SubResourceCreateOption) error {
+	r.spy.evictions++
+	return r.SubResourceClient.Create(ctx, obj, subResource, opts...)
+}
+
+// pdbBlocking 模拟 PDB 拒绝：所有 eviction 请求都返回 429。
+type pdbBlocking struct {
+	client.Client
+}
+
+func (b *pdbBlocking) SubResource(string) client.SubResourceClient { return errEviction{} }
+
+type errEviction struct{}
+
+func (errEviction) Get(context.Context, client.Object, client.Object, ...client.SubResourceGetOption) error {
+	return nil
+}
+
+func (errEviction) Create(context.Context, client.Object, client.Object, ...client.SubResourceCreateOption) error {
+	return apierrors.NewTooManyRequests(
+		"Cannot evict pod as it would violate the pod's disruption budget.", 1)
+}
+
+func (errEviction) Update(context.Context, client.Object, ...client.SubResourceUpdateOption) error {
+	return nil
+}
+
+func (errEviction) Patch(context.Context, client.Object, client.Patch, ...client.SubResourcePatchOption) error {
+	return nil
 }
 
 func TestApply_EscalatesWithinCooldown(t *testing.T) {
