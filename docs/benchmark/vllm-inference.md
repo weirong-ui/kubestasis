@@ -63,7 +63,7 @@ CRD 的 `MetricTarget` 只有 `Type` / `Target`，**没有 PromQL 覆盖字段**
 | 组件 | 跑在哪 | 说明 |
 |---|---|---|
 | vLLM（Qwen2.5-1.5B，`:8000`） | 腾讯云 CVM（GPU 按量实例） | 单卡 T4 16G / A10 24G 都够 1.5B；`--max-model-len 2048`，`--gpu-memory-utilization` 留余量 |
-| Prometheus（`:9090`） | CVM，docker | 抓 vLLM，补 `app` / `namespace` label |
+| Prometheus（`:9090`） | CVM，官方二进制（也可 docker） | 抓 vLLM，补 `app` / `namespace` label |
 | loadgen | CVM | 本机打 `localhost:8000`，不用把 8000 也转出来 |
 | KubeStasis manager | **本地宿主机进程**（`go run ./cmd`） | 直连当前 kubeconfig，避开"容器内访问宿主机"的网络坑 |
 | Kubernetes | 本地 docker-desktop v1.36.1 | `kubectl` 1.36.1 / Docker 29.9.2 已就绪；本机没有 `make` / `kind` / `helm`，用等价命令 |
@@ -79,10 +79,12 @@ CRD 的 `MetricTarget` 只有 `Type` / `Target`，**没有 PromQL 覆盖字段**
 
 | 项 | 选什么 | 为什么 |
 |---|---|---|
-| 计费 | **按量计费** | 只跑 2–3 小时；创建时会冻结一小时费用，销毁后解冻 |
-| 机型 | 单卡 T4（16G）或 A10（24G） | 1.5B 模型用不到大卡；T4 的 compute capability 是 7.5，正好卡在 vLLM 要求的下限（官方 ≥ 7.5），再小的卡跑不了；**单价以购买页实时报价为准** |
-| 系统 | **Ubuntu 24.04 LTS**（公共镜像即可） | vLLM 要求 Python 3.11–3.14；24.04 自带 3.12 正好够，20.04 自带 3.8、22.04 自带 3.10，都得额外装 Python，反而更麻烦 |
-| GPU 驱动 | 购买页勾选自动安装（CUDA 12.x + cuDNN 9.x）；不勾就自己装 550+ 驱动和 nvidia-container-toolkit | vLLM 官方 wheel 按 CUDA 12.9 编译，驱动 ≥ 525 即可向下兼容 |
+| 计费 | **按量计费**，下单前看清费用单位是「元/小时」 | 只跑 2–3 小时；创建时会冻结一小时费用，销毁后解冻。页面右下角的配置费用若没标单位，务必点「费用明细」确认是按量小时价，别误买包月 |
+| 地域 | 有货就行（香港 / 上海 / 北京均可） | 不影响任何步骤：`kubectl` 在本地、流量走 SSH 隧道。香港出站拉 PyPI / 模型权重更顺，内地地域延迟更低；单价以页面为准，别照抄网上数字 |
+| 机型 | 单卡 T4（16G）或 A10（24G），如 `GN7.2XLARGE32`（8C32G + 1×T4） | 1.5B 模型用不到大卡；T4 的 compute capability 是 7.5，正好卡在 vLLM 要求的下限（官方 ≥ 7.5），再小的卡跑不了 |
+| 系统 | **Ubuntu Server 24.04 LTS 64 位**（公共镜像） | vLLM 要求 Python 3.11–3.14；24.04 自带 3.12 正好够，20.04 自带 3.8、22.04 自带 3.10，都得额外装 Python，反而更麻烦 |
+| GPU 驱动 | 勾「后台自动安装 GPU 驱动」，驱动 / CUDA / cuDNN 用默认下拉（实测为 580 / CUDA 13.0 / cuDNN 9.20） | 驱动 580 ≥ 525，向下兼容 vLLM wheel 依赖的 CUDA 12.x。**别**为了"对齐 CUDA 12.9"去换镜像或手动降级 |
+| 系统盘 | 默认 100G 增强型 SSD 即可 | 模型权重 3G 左右，50G 也够；这 2–3 小时的盘费可以忽略，不值得为省几毛钱去改 |
 | 登录 | **绑定 SSH 密钥**（§1.2），不要只设密码 | 我这边用 `BatchMode` 非交互登录，只给密码会直接失败 |
 | 安全组 | 只放行入站 22；**不要**放行 9090 / 8000 | 9090 走隧道，公网暴露等于把 Prometheus 开放出去 |
 | 公网 IP | 分配公网 IP，或绑 EIP | 没公网 IP 我连不上；EIP 是为了关机再开时 IP 不变 |
@@ -133,23 +135,31 @@ A 不通就先停，不要往下跑；B 里三条指标缺任何一条，按 §5
 
 ### 3.1 起 vLLM（CVM）
 
-系统里没有 vLLM 本体，两种装法选一种。
+系统里没有 vLLM 本体。动手前先确认驱动真的装好了（勾了「后台自动安装」也要等它装完，
+通常开机后 1–2 分钟）：
 
-**A. venv + pip**（跑在系统里，§3.2 的 target 原样可用）
+```bash
+nvidia-smi        # 必须看到 T4 和 "Driver Version: 580.x"
+```
+
+装法选一种，默认走 A。
+
+**A. venv + pip**（跑在宿主机，§3.2 的 target 原样可用）
 
 ```bash
 sudo apt install -y python3-venv          # 24.04 默认没装这个包
-python3 -m venv /opt/vllm && source /opt/vllm/bin/activate
+python3 -m venv ~/vllm && source ~/vllm/bin/activate
 pip install vllm
 vllm serve Qwen/Qwen2.5-1.5B --port 8000 --max-model-len 2048 \
   --gpu-memory-utilization 0.85 --host 0.0.0.0
 ```
 
+venv 建在家目录而不是 `/opt`，省掉 `sudo` 建目录、后来又要 `chown` 的麻烦。
 Ubuntu 24.04 有 PEP 668，**必须在 venv 里装**。直接在系统 Python 上 `pip install`
 会报 `externally-managed-environment`；别用 `--break-system-packages` 图省事，
 这个实验不值得冒污染系统 Python 的险。
 
-**B. 官方 Docker 镜像**（宿主机只要有驱动 + nvidia-container-toolkit，跟系统版本几乎无关）
+**B. 官方 Docker 镜像**（需要先自己装 Docker + nvidia-container-toolkit，公共镜像不带）
 
 ```bash
 docker run -d --name vllm --gpus all -p 8000:8000 \
@@ -179,24 +189,35 @@ rule_files:
 scrape_configs:
   - job_name: vllm
     static_configs:
-      - targets: ['host.docker.internal:8000']
+      - targets: ['127.0.0.1:8000']   # Prometheus 与 vLLM 同机跑，别写 host.docker.internal
         labels:
           app: vllm                 # 必须逐字等于 App CR 的 metadata.name
           namespace: vllm           # 必须逐字等于 App CR 所在的 namespace
 ```
 
-Linux 上 docker 容器访问宿主机，起容器时要带
-`--add-host=host.docker.internal:host-gateway`。
+公共镜像里 vLLM 和 Prometheus 都跑在宿主机上，`127.0.0.1:8000` 直接可达。只有下面
+§3.3 走 Docker 那一种才需要 `host.docker.internal`。
 
 ### 3.3 起 Prometheus（CVM）
 
+公共镜像**不含 Docker**，最省事的做法是直接用官方二进制，不装容器运行时：
+
 ```bash
-docker run -d --name prom -p 9090:9090 \
-  --add-host=host.docker.internal:host-gateway \
-  -v "$(pwd)/prom.yml:/etc/prometheus/prometheus.yml" \
-  -v "$(pwd)/alias.yml:/etc/prometheus/alias.yml" \
-  prom/prometheus --web.enable-lifecycle
+V=$(curl -s https://api.github.com/repos/prometheus/prometheus/releases/latest \
+  | grep -oP '"tag_name": "v\K[^"]+')
+curl -sLO "https://github.com/prometheus/prometheus/releases/download/v$V/prometheus-$V.linux-amd64.tar.gz"
+tar xf "prometheus-$V.linux-amd64.tar.gz"
+sudo mkdir -p /etc/prometheus
+sudo cp prom.yml /etc/prometheus/prometheus.yml
+[ -f alias.yml ] && sudo cp alias.yml /etc/prometheus/alias.yml
+nohup ./prometheus-$V.linux-amd64/prometheus \
+  --config.file=/etc/prometheus/prometheus.yml --web.enable-lifecycle \
+  --storage.tsdb.path=/tmp/prom-data > /tmp/prom.log 2>&1 &
 ```
+
+想用容器也行，先 `sudo apt install -y docker.io`，然后起 `prom/prometheus` 并带
+`--add-host=host.docker.internal:host-gateway`，同时把 §3.2 的 target 改成
+`host.docker.internal:8000`。两条路都能走，别混着写。
 
 指标名不一致时的 `alias.yml`（把真实指标映射成默认名，不改 Go）：
 
