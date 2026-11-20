@@ -87,7 +87,7 @@ CRD 的 `MetricTarget` 只有 `Type` / `Target`，**没有 PromQL 覆盖字段**
 | 系统盘 | 默认 100G 增强型 SSD 即可 | 模型权重 3G 左右，50G 也够；这 2–3 小时的盘费可以忽略，不值得为省几毛钱去改 |
 | 登录 | **绑定 SSH 密钥**（§1.2），不要只设密码 | 我这边用 `BatchMode` 非交互登录，只给密码会直接失败 |
 | 安全组 | 只放行入站 22；**不要**放行 9090 / 8000 | 9090 走隧道，公网暴露等于把 Prometheus 开放出去 |
-| 公网 IP | 分配公网 IP，或绑 EIP | 没公网 IP 我连不上；EIP 是为了关机再开时 IP 不变 |
+| 公网 IP | **勾「分配独立公网 IP」**（或事后绑 EIP） | 购买页这一项默认不勾，不勾就没公网 IP，我连不上；EIP 是为了关机再开时 IP 不变 |
 
 首次开 GPU 机型可能需要先在控制台申请配额，部分可用区也会无库存——这两件只能账号
 本人在控制台确认，开工前先确认好，别等实例开起来才发现选不了卡。
@@ -101,7 +101,12 @@ CRD 的 `MetricTarget` 只有 `Type` / `Target`，**没有 PromQL 覆盖字段**
 ~/.ssh/kubestasis_vllm_tencent.pub    # 公钥
 ```
 
-创建 CVM 时在「SSH 密钥」里新建并粘贴这段公钥：
+创建 CVM 时在「SSH 密钥」里新建并粘贴这段公钥。两个坑：
+
+- **密钥名称只能用字母、数字、下划线**（`kubestasis_vllm`），带连字符会报"请输入密钥名称"；
+- 公钥**必须在一行里**，中间不能有换行或多余空格，粘完按一次 `End` 应该直接到行尾。
+
+公钥：
 
 ```
 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIe1z1vH1W1iCmgUta/kJZI6yeMzAuL7XGVltACAYJwI kubestasis-vllm-tencent-temp
