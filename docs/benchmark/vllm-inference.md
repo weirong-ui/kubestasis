@@ -80,8 +80,9 @@ CRD 的 `MetricTarget` 只有 `Type` / `Target`，**没有 PromQL 覆盖字段**
 | 项 | 选什么 | 为什么 |
 |---|---|---|
 | 计费 | **按量计费** | 只跑 2–3 小时；创建时会冻结一小时费用，销毁后解冻 |
-| 机型 | 单卡 T4（16G）或 A10（24G） | 1.5B 模型用不到大卡；**单价以购买页实时报价为准**，不同卡型差好几倍，别照抄网上任何数字 |
-| 镜像 | 镜像市场「Ubuntu 20.04 GPU 基础镜像（预装 525 驱动 / CUDA / Docker / nvidia-container-toolkit）」 | 省掉装驱动和 toolkit；选纯净 Ubuntu 就得先手动装，那半天不值 |
+| 机型 | 单卡 T4（16G）或 A10（24G） | 1.5B 模型用不到大卡；T4 的 compute capability 是 7.5，正好卡在 vLLM 要求的下限（官方 ≥ 7.5），再小的卡跑不了；**单价以购买页实时报价为准** |
+| 系统 | **Ubuntu 24.04 LTS**（公共镜像即可） | vLLM 要求 Python 3.11–3.14；24.04 自带 3.12 正好够，20.04 自带 3.8、22.04 自带 3.10，都得额外装 Python，反而更麻烦 |
+| GPU 驱动 | 购买页勾选自动安装（CUDA 12.x + cuDNN 9.x）；不勾就自己装 550+ 驱动和 nvidia-container-toolkit | vLLM 官方 wheel 按 CUDA 12.9 编译，驱动 ≥ 525 即可向下兼容 |
 | 登录 | **绑定 SSH 密钥**（§1.2），不要只设密码 | 我这边用 `BatchMode` 非交互登录，只给密码会直接失败 |
 | 安全组 | 只放行入站 22；**不要**放行 9090 / 8000 | 9090 走隧道，公网暴露等于把 Prometheus 开放出去 |
 | 公网 IP | 分配公网 IP，或绑 EIP | 没公网 IP 我连不上；EIP 是为了关机再开时 IP 不变 |
@@ -112,11 +113,11 @@ ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIe1z1vH1W1iCmgUta/kJZI6yeMzAuL7XGVltACAYJwI
 ## 2. 前置自检（开工第一条命令）
 
 ```bash
-# A. CVM 是否能连（腾讯云默认 22，用 §1.2 的密钥；不通就切备选 B）
-ssh -o BatchMode=yes -i ~/.ssh/kubestasis_vllm_tencent -p 22 root@<公网IP> 'echo ok'
+# A. CVM 是否能连（腾讯云 Ubuntu 镜像默认用户是 ubuntu，不是 root；密钥见 §1.2）
+ssh -o BatchMode=yes -i ~/.ssh/kubestasis_vllm_tencent -p 22 ubuntu@<公网IP> 'echo ok'
 
 # B. 真实指标名（抄进 §7；vLLM 要到 §3.1 才起，这条在起完服务后跑）
-ssh -i ~/.ssh/kubestasis_vllm_tencent -p 22 root@<公网IP> \
+ssh -i ~/.ssh/kubestasis_vllm_tencent -p 22 ubuntu@<公网IP> \
   'curl -s localhost:8000/metrics | grep -E "^vllm:" | head -30'
 
 # C. 本地集群
@@ -124,25 +125,46 @@ kubectl get nodes
 ```
 
 A 不通就先停，不要往下跑；B 里三条指标缺任何一条，按 §5 中止。
+腾讯云 Ubuntu 镜像默认只让 `ubuntu` 用户登录，`root` 直接连会被拒。要提权就 `sudo -i`；
+若 sudo 要密码而密钥登录又没法交互，先在控制台给实例设一个登录密码（或从 VNC 进去配
+免密 sudo），别等跑流时才发现提不了权。
 
 ## 3. 步骤
 
 ### 3.1 起 vLLM（CVM）
 
+系统里没有 vLLM 本体，两种装法选一种。
+
+**A. venv + pip**（跑在系统里，§3.2 的 target 原样可用）
+
 ```bash
+sudo apt install -y python3-venv          # 24.04 默认没装这个包
+python3 -m venv /opt/vllm && source /opt/vllm/bin/activate
+pip install vllm
 vllm serve Qwen/Qwen2.5-1.5B --port 8000 --max-model-len 2048 \
   --gpu-memory-utilization 0.85 --host 0.0.0.0
-curl -s localhost:8000/v1/models            # 确认服务起来
 ```
+
+Ubuntu 24.04 有 PEP 668，**必须在 venv 里装**。直接在系统 Python 上 `pip install`
+会报 `externally-managed-environment`；别用 `--break-system-packages` 图省事，
+这个实验不值得冒污染系统 Python 的险。
+
+**B. 官方 Docker 镜像**（宿主机只要有驱动 + nvidia-container-toolkit，跟系统版本几乎无关）
+
+```bash
+docker run -d --name vllm --gpus all -p 8000:8000 \
+  vllm/vllm-openai:latest --model Qwen/Qwen2.5-1.5B \
+  --max-model-len 2048 --gpu-memory-utilization 0.85
+```
+
+走容器时 §3.2 的 target 要改成容器可达地址（或让 Prometheus 也 `--network host`），
+别照抄 `host.docker.internal:8000`。
+
+确认服务起来：`curl -s localhost:8000/v1/models`。
 
 `--gpu-memory-utilization` 默认 0.9，容易和模型权重、激活一起挤爆显存；0.85 是保守起点，
 按实际显存调。T4 只有 16G，1.5B 模型够用但余量小，起不来就把 `max-model-len` 降到 1024
 或把该值调到 0.7；A10 24G 宽松些。
-
-§1.1 的 GPU 基础镜像预装了驱动 / CUDA / Docker / toolkit，**不含 vLLM 本体**，开工先装：
-`pip install vllm`（注意与镜像里 CUDA 版本匹配），或用官方 `vllm/vllm-openai` 镜像以
-`--gpus all` 起容器。若改用容器，§3.2 的 target 要相应改成容器可达地址，别照抄
-`host.docker.internal:8000`。这一步以 `curl -s localhost:8000/v1/models` 返回为准。
 
 ### 3.2 写 `prom.yml`（CVM）
 
@@ -192,7 +214,7 @@ groups:
 ### 3.4 隧道（本地，保持后台）
 
 ```bash
-ssh -N -i ~/.ssh/kubestasis_vllm_tencent -L 9090:127.0.0.1:9090 -p 22 root@<公网IP>
+ssh -N -i ~/.ssh/kubestasis_vllm_tencent -L 9090:127.0.0.1:9090 -p 22 ubuntu@<公网IP>
 curl -s 'http://127.0.0.1:9090/api/v1/query?query=up' | head -c 200
 ```
 
