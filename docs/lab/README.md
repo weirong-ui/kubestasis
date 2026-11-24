@@ -9,6 +9,19 @@
 
 ## 结果一览
 
+> **时点说明（2026-11-24 补）**：这一批实验跑在控制器 `kubestasis:p9` 上，早于
+> `86ee56f`（2026-11-20）合入的「全信号弃权守卫」。下表有两行依赖那条旧路径：
+> 「指标全弃权（单元）」和「5（集群）」。旧实现里所有指标查询返回 `ok=false`
+> 时，`desired` 停在 `minReplicas` 继续往下走，稳定窗口一过就按步长缩到 min，
+> 原因码 `scale_down`、事件写 `load below targets`，这正是当时要复现的 bug。
+> 现在 `internal/scaler/engine.go` 的 `if !anySignal` 分支返回 `ActionNone`、
+> 保持副本数、原因码 `no_metrics_data`，`TestDecide_AllSignalsAbstain_HoldsReplicas`
+> 与 `TestDecide_PartialAbstain_StillScales` 是回归门。按
+> [hack/lab/README.md](../../hack/lab/README.md) 重跑，`TestLabAbstain` 二十四轮
+> 恒为 `5`（本次用 `go test -overlay` 实跑过）；`exp5.sh` 走同一条 `ok=false`
+> 路径，按当前代码也不会再缩到 min，但**未在集群重跑**。**两行观测保留不改**，
+> 它们是修复前的真实快照；其余各行不依赖这条路径，不受影响。
+
 | 实验 | 关键观测 | 结论 |
 |---|---|---|
 | 决策层（单元） | 稳定 60s+冷却 120s：`5 5 5 5 4 4 4 4`；稳定 0s：`4 4 4 … 3`；冷却 0s：`5 5 5 5 4 3 2 1` | 两个窗口各自贡献独立的延迟，不是同一个东西 |

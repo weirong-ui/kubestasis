@@ -36,12 +36,21 @@ LAB_GUARD_ONLY=1 bash hack/lab/exp5.sh   # 只验证守卫，不碰集群
 
 ## 八个实验
 
+> **时点说明（2026-11-24 补）**：`exp_abstain_test.go` 与 `exp5.sh` 记录的是
+> `86ee56f`（2026-11-20）加「全信号弃权守卫」**之前**的行为：那时所有指标查询
+> 返回 `ok=false` 会被当成 `desired=minReplicas`，一路缩到 min。现在
+> `internal/scaler/engine.go` 的 `if !anySignal` 分支返回 `ActionNone`、保持副本数、
+> 原因码 `no_metrics_data`。重跑 `exp_abstain_test.go` 会停在起始副本数（本次
+> `go test -overlay` 实跑验证）；`exp5.sh` 走同一条路径，按代码也不会再缩，
+> 但**未在集群重跑**。归档观测见 [docs/lab/README.md](../../docs/lab/README.md)，
+> 两个脚本与 `exp5.sh` 的结论段保留不改，它们是当时的原始记录。
+
 | 脚本 | 证明什么 | 耗时 |
 |---|---|---|
 | `exp_lab_test.go` | 决策层：稳定窗口、冷却、迟滞带各自的作用（A/B/C 拆窗口，D/E 是迟滞 0 与 50 的对照） | 0.3s |
-| `exp_abstain_test.go` | 指标全弃权时会不会缩到 min（bug 的单元层证据） | 0.3s |
+| `exp_abstain_test.go` | 全信号弃权时是否保持副本数（旧版是「缩到 min」的 bug 证据，见上方说明） | 0.3s |
 | `exp3_4.sh` | 冷却的间隔贡献；稳定窗口计时跨重启存活 | 6min |
-| `exp5.sh` | 真实集群复现"缩到 min"，含两组判别对照 | 3min |
+| `exp5.sh` | 真实集群验证全弃权路径，含 min=1 / min=3 两组判别对照（旧版缩到 min，见上方说明） | 3min |
 | `exp6.sh` | 冷却窗口短于探测周期时，升级条件永不触发 | 4min |
 | `exp7.sh` | L2→L3 升级与回滚，rev1 复用验证 | 2min |
 | `exp8.sh` | L2 绕过 PDB：同一时刻 eviction 429、Delete 成功 | 1min |
