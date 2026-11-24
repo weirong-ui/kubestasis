@@ -30,11 +30,12 @@ func runAbstain(t *testing.T, name string, stabSeconds, cooldownSeconds int, rou
 	replicas := int32(5)
 	app.Spec.Replicas = &replicas
 	stab := int32(stabSeconds)
+	hyst := int32(10)
 	app.Spec.Scaling = &appsv1alpha1.ScalingPolicy{
 		MinReplicas:                   1,
 		MaxReplicas:                   10,
 		CooldownSeconds:               cooldownSeconds,
-		HysteresisPercent:             10,
+		HysteresisPercent:             &hyst,
 		ScaleDownStepPercent:          20,
 		ScaleDownStabilizationSeconds: &stab,
 		Metrics: []appsv1alpha1.MetricTarget{

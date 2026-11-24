@@ -1,8 +1,11 @@
 package scaler
 
 // 临时实验文件：只用来观察 Decide 在连续多轮里的输出，不做断言。
-// 用法：复制到 internal/scaler/ 下，跑 go test ./internal/scaler -run TestLabTrace -v
+// 用法：复制到 internal/scaler/ 下，跑
+//   go test ./internal/scaler -run TestLabTrace -v
 // 跑完删掉，不要提交。
+//
+// 放在 testdata/ 下是为了不被 go build ./... 当成包编译。
 
 import (
 	"context"
@@ -38,11 +41,14 @@ func runTrace(t *testing.T, name string, stabSeconds, cooldownSeconds, hystPerce
 	replicas := int32(5)
 	app.Spec.Replicas = &replicas
 	stab := int32(stabSeconds)
+	// 迟滞带现在是指针：nil 走 CRD 默认 10，显式 0 才是"关掉"。
+	// 这里必须取地址，用 0 值 int 赋值会编译不过。
+	hyst := int32(hystPercent)
 	app.Spec.Scaling = &appsv1alpha1.ScalingPolicy{
 		MinReplicas:                   1,
 		MaxReplicas:                   10,
 		CooldownSeconds:               cooldownSeconds,
-		HysteresisPercent:             hystPercent,
+		HysteresisPercent:             &hyst,
 		ScaleDownStepPercent:          20,
 		ScaleDownStabilizationSeconds: &stab,
 		Metrics: []appsv1alpha1.MetricTarget{
@@ -85,15 +91,22 @@ func runTrace(t *testing.T, name string, stabSeconds, cooldownSeconds, hystPerce
 }
 
 func TestLabTrace(t *testing.T) {
-	fmt.Println("起点 5 副本，信号一直要求 1 副本，每轮间隔 15 秒")
+	fmt.Println("起点 5 副本，每轮间隔 15 秒，共 12 轮（约 3 分钟）")
 	fmt.Println()
 
+	// 实验 3、4：两个窗口各贡献多少延迟。
+	// A 是基线，B 只关稳定窗口，C 只关冷却窗口。
+	fmt.Println("— 实验 3、4 —")
 	runTrace(t, "A 稳定60s + 冷却120s", 60, 120, 10, 1, 12)
 	runTrace(t, "B 稳定0s  + 冷却120s", 0, 120, 10, 1, 12)
 	runTrace(t, "C 稳定60s + 冷却0s", 60, 0, 10, 1, 12)
-	runTrace(t, "D 迟滞填0（只想微缩）", 60, 0, 0, 4, 12)
 
-	fmt.Println("对比 A 和 B：稳定窗口单独贡献了多久的延迟")
-	fmt.Println("对比 A 和 C：冷却窗口单独贡献了多久的间隔")
-	fmt.Println("看 D：迟滞带填 0，行为有没有变")
+	// 实验 1、2：同一条信号（要求 4 副本，比当前少 1），只改迟滞带。
+	// D 是关掉迟滞（实验1），E 是拉满 50%（实验2）。
+	fmt.Println("— 实验 1、2 —")
+	runTrace(t, "D 迟滞0（实验1）", 60, 0, 0, 4, 12)
+	runTrace(t, "E 迟滞50（实验2）", 60, 0, 50, 4, 12)
+
+	fmt.Println("A 与 B 之差是稳定窗口的贡献；A 与 C 之差是冷却窗口的贡献。")
+	fmt.Println("D 与 E 只差一个迟滞值：0 该缩，50 把 1 个副本的差挡在带内。")
 }

@@ -38,7 +38,7 @@ LAB_GUARD_ONLY=1 bash hack/lab/exp5.sh   # 只验证守卫，不碰集群
 
 | 脚本 | 证明什么 | 耗时 |
 |---|---|---|
-| `exp_lab_test.go` | 决策层：稳定窗口、冷却、迟滞带各自的作用 | 0.3s |
+| `exp_lab_test.go` | 决策层：稳定窗口、冷却、迟滞带各自的作用（A/B/C 拆窗口，D/E 是迟滞 0 与 50 的对照） | 0.3s |
 | `exp_abstain_test.go` | 指标全弃权时会不会缩到 min（bug 的单元层证据） | 0.3s |
 | `exp3_4.sh` | 冷却的间隔贡献；稳定窗口计时跨重启存活 | 6min |
 | `exp5.sh` | 真实集群复现"缩到 min"，含两组判别对照 | 3min |
