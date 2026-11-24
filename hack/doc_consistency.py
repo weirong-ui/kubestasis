@@ -103,7 +103,7 @@ REALITY = [
     # "AI 推理信号尚未执行/未实测"，而同日的 vLLM 实测记录已在 main 入库。
     # 这类"分支分叉导致的过期声明"和上面几条一样，产物存在就不许再说没做。
     # 正则限定在 AI 推理那两行内，避免误伤 STATUS §七「控制面高可用从未实测」
-    # 和 README「STATUS 里那些『未实测』就是底线的产物」这类仍然成立的表述。
+    # 和 docs/ai-collaboration.md 里「没有证据的地方标未实测」这类仍然成立的表述。
     ("docs/benchmark/vllm-inference-run-2026-11-20.md", "README.md",
      r"AI 推理信号[^\n]{0,80}(尚未执行|未实测|只有单测|尚欠实测)"),
     ("docs/benchmark/vllm-inference-run-2026-11-20.md", "docs/STATUS.md",

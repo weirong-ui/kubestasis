@@ -181,20 +181,6 @@ webhook 证书默认用渲染期自签（零外部依赖），也可切 cert-man
 - **接 HPA 的 custom metrics API**：可以让 HPA 复用我们的指标，但那是在给别人做插件，无法承载"自愈"这个差异点。
 - **cert-manager 依赖**：为了"一条命令能起"，改用 `hack/webhook-certs.sh` 自签 + 注入 caBundle；生产环境建议换 cert-manager。
 
-## 代码和文档是怎么分工的
-
-这个项目用 AI 辅助。按模块写清楚用在哪，"部分工作由 AI 协助"那种句子读不出任何信息。
-
-| 模块 | 分工 |
-|---|---|
-| `internal/controller` | 骨架我写；冲突重试、删除放闸、条件竞态这些边界 AI 起草，我逐行改 |
-| `internal/scaler`、`internal/healer` | 决策语义和自愈顺序我定；实现与单测 AI 起草，我改 |
-| `internal/webhook` | 校验规则与默认值我定，代码 AI 起草 |
-| `pkg/miniinformer` | 我写 |
-| `test/`、`hack/`、`docs/` | 断言和口径我定；样板与脚本 AI 起草，数字回原始 CSV 核 |
-
-一条底线：AI 写下的每个"已验证"都要有对应的命令输出，没有就删。STATUS 里那些"未实测"就是这条底线的产物。
-
 ## 项目结构
 
 ```
@@ -240,6 +226,7 @@ go test ./... -cover     # 单元测试（149 用例）
 - 远景、不承诺排期：eBPF 采集、多集群
 
 详细的逐条状态、已知坑、不解决的问题：[docs/STATUS.md](docs/STATUS.md)。
+AI 参与方式与缺陷的可核验记录：[docs/ai-collaboration.md](docs/ai-collaboration.md)。
 
 ## License
 

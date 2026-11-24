@@ -1,7 +1,7 @@
 # KubeStasis 实现状态（真实账本）
 
 > 本文件是**唯一可信的能力清单**。README 的一切对外描述以此为准，每完成一项就把状态改掉。
-> 最后更新：2026-11-20（三个已有缺陷补回归门 + 实验脚本入库；同日完成两轮真实 vLLM 实测）
+> 最后更新：2026-11-24（README 分工表删除，AI 参与记录改为可核验事实并移至 docs/ai-collaboration.md）
 > 验收口径：代码能在干净集群上 `deploy → apply App → Available`，且有可复现的证据。
 > ⚠️ 项目原名 KubeSentry，2026-11-03 更名 KubeStasis；CRD group 于 2026-11-04 由 `apps.sentry.io` 改为 `kubestasis.io`（不再沿用第三方商标）。
 
@@ -164,6 +164,7 @@
 | 2026-11-19 | miniinformer 回放与退出修正、`Apply` 去副作用、文档瘦身 | 复查发现五处：重连后的 List 不清掉断线期间被删的 key（Store 留幽灵对象、`DeleteFunc` 不触发）；排队的 `Add` 被 `Sync` 覆盖，`AddFunc` 不触发；consume 卡在 `Pop` 时 done 唤不醒（每断一次线漏一个 goroutine）；List 失败直接退出、断线零间隔重连；`Apply` 偷偷改 `app.Spec.Replicas`。文档侧删掉 6σ 表述、git 历史核验段和重复的严谨说明，分工表八行压到五行；139 → 143 用例 |
 | 2026-11-20 | 三个已有缺陷补回归门 + 实验入库 | ①指标全弃权：`Decide` 加 `anySignal` 守卫，全弃权返回 `no_metrics_data` 并保持当前副本（原来 desired 停在 min，六分钟 5→2，事件还写 `load below targets`）；②`hysteresisPercent` 改 `*int32`：`int + omitempty` 会让 webhook 把显式 0 从 patch 里删掉、CRD 默认值再改回 10，"关闭"永远表达不出来；③L2 从 `Delete` 改走 `eviction` 子资源，429 时停手不硬闯，RBAC 补 `pods/eviction`。回归：新增全弃权/部分弃权/零值迟滞三条单测（其中一条旧用例原先把 bug 写成预期"逐步缩回 min"，本次翻转）、healer 加 eviction 调用与 PDB 拦截两条；e2e 加 `minAvailable: 100%` 门，断言事件里出现 disruption budget。`hack/lab` 入库 8 个实验脚本 + `lib.sh` 守卫（命名空间白名单/本地集群限定）+ `make lab`、`make lab-check`，CI docs job 跑守卫检查；实验结果归档 `docs/lab/`；143 → 149 用例 |
 | 2026-11-20 | 两轮真实 vLLM 实测（腾讯云 T4 单卡） | 首轮 500 并发压出 QueueDepth 244 / TTFT p95 76s，两条信号越线触发 `ScaleUp: 1 -> 3`，撤载后按稳定窗口 `3 -> 2 -> 1` 单步回落；补跑用单信号隔离（App 只留 `KVCacheUsage=0.85`）+ 256 长 prompt + 唯一前缀破 prefix caching + `ignore_eos`，KV 峰值 1.000 独立触发 `1 -> 2 -> 3`。三条信号**各自**在真指标上越线过、都触发过决策，但不是同一轮负载里同时越线。**边界：n=1，不做统计推断；扩出的副本是装饰对象、不承接推理流量，不是端到端弹性**。实录见 [docs/benchmark/vllm-inference-run-2026-11-20.md](benchmark/vllm-inference-run-2026-11-20.md)，开工清单见 [vllm-inference.md](benchmark/vllm-inference.md) |
+| 2026-11-24 | README 删分工表，AI 参与记录改为可核验事实 | 删除 README「代码和文档是怎么分工的」整节（模块分工表与「我逐行改」表述），新建 [docs/ai-collaboration.md](ai-collaboration.md)：按事件记录问题如何暴露、对应提交哈希、原始 CSV 与报告、防回归的门，含 11-20 用例数账实缺口与 e2e PDB 门被真 apiserver 证伪两条；不写「谁写了哪一行」这类无法核验的归因。README 文末保留一行文档索引，台账顶部最后更新同步到 11-24。 |
 
 ### 11.03 晚新踩的坑（已修，写进记忆）
 
