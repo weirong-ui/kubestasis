@@ -1,7 +1,7 @@
 # KubeStasis 实现状态（真实账本）
 
 > 本文件是**唯一可信的能力清单**。README 的一切对外描述以此为准，每完成一项就把状态改掉。
-> 最后更新：2026-11-24（README 分工表删除、AI 参与记录改为可核验事实；lab 归档补全信号弃权守卫的时点说明，标注两行修复前观测）
+> 最后更新：2026-11-25（双副本选主与接管实测通过，chart 补 PDB 与软反亲和；§七「控制面高可用」结项）
 > 验收口径：代码能在干净集群上 `deploy → apply App → Available`，且有可复现的证据。
 > ⚠️ 项目原名 KubeSentry，2026-11-03 更名 KubeStasis；CRD group 于 2026-11-04 由 `apps.sentry.io` 改为 `kubestasis.io`（不再沿用第三方商标）。
 
@@ -124,7 +124,7 @@
 | **多集群 / 跨集群联邦** | 涉及跨集群服务发现、状态同步、冲突消解，是独立课题；单集群链路还没被真实流量打磨过 | 至少要先有 metrics 聚合层与全局调度器；基于 Karmada/ClusterAPI 做上层编排比自研更现实 |
 | **无侵入指标采集（eBPF）** | 需要内核态开发、节点特权与版本兼容矩阵；收益是省掉应用埋点，但本项目假定应用暴露 Prometheus 指标 | 用 Pixie/eBPF exporter 作为 MetricsSource 的另一种实现即可，不必自研 |
 | **真正的流量切分式金丝雀**（按权重引流） | 现在做的是"发布后观察错误率，超阈值回滚"——观察真实流量，不做权重控制。名字叫 canary，但不是流量治理 | 引入 Gateway API / Istio 的权重路由；Webhook 侧还要管 VirtualService 生命周期 |
-| **控制面高可用** | chart 已开 `leaderElection`，但 `replicaCount` 默认 1——**双副本下的选主接管、伸缩不重复执行从未实测**。个人项目的集群规模用不上，开了反而增加演示复杂度 | 副本数 ≥2 真集群验证切换；配合 PDB 与反亲和 |
+| ~~控制面高可用~~ | **已解决（11-25）**：chart 在 `replicaCount>1` 时自动补 PDB（`minAvailable: 1`）与软反亲和，真集群（v1.36.1）实测双副本选主、两次击杀 leader 接管 18s/17s、切换期间 ScaleUp 决策 4 次且副本峰值 2，见 [ha-verification.md](ha-verification.md)。残余：网络分区/进程冻结下的脑裂、节点级容灾、多节点反亲和的真实分散、webhook 双副本准入都未验证 | —— |
 | ~~决策可观测性的最后一公里（Grafana 面板）~~ | **已解决**（11-04 深夜，`92c277c`，见 §三）。残余：面板只做单集群单数据源，没有多集群聚合 | —— |
 | ~~envtest 级别的控制循环回归~~ | **已解决**（11-04 深夜，`52b3c70`，见 §三）。残余：envtest 没覆盖 webhook 联动与 status 子资源的并发写竞争 | —— |
 | **升级/迁移路径**（CRD 版本演进、v1alpha1 → v1beta1） | 还没有真实用户，谈 conversion webhook 为时过早 | 定义 v1beta1 + conversion webhook + 存储版本迁移演练 |
@@ -141,7 +141,6 @@
 3. ~~envtest 集成测试~~ / ~~Grafana 面板~~：**11-04 深夜完成**
 4. 剩下的硬骨头：
    - **压测扩项**（串行 + 多轮重复 + G0/G2 对照，让核心结论可分辨于噪声——动机与预核算见 [variance-precheck.md](benchmark/variance-precheck.md)）
-   - HA 双副本切换验证（§七"控制面高可用"残余）
 5. 可选增强（不承诺）：Kyverno 策略进 CI kind 集群实测、CRD v1beta1 + conversion
 
 ## 九、每日勾选
@@ -166,6 +165,7 @@
 | 2026-11-20 | 两轮真实 vLLM 实测（腾讯云 T4 单卡） | 首轮 500 并发压出 QueueDepth 244 / TTFT p95 76s，两条信号越线触发 `ScaleUp: 1 -> 3`，撤载后按稳定窗口 `3 -> 2 -> 1` 单步回落；补跑用单信号隔离（App 只留 `KVCacheUsage=0.85`）+ 256 长 prompt + 唯一前缀破 prefix caching + `ignore_eos`，KV 峰值 1.000 独立触发 `1 -> 2 -> 3`。三条信号**各自**在真指标上越线过、都触发过决策，但不是同一轮负载里同时越线。**边界：n=1，不做统计推断；扩出的副本是装饰对象、不承接推理流量，不是端到端弹性**。实录见 [docs/benchmark/vllm-inference-run-2026-11-20.md](benchmark/vllm-inference-run-2026-11-20.md)，开工清单见 [vllm-inference.md](benchmark/vllm-inference.md) |
 | 2026-11-24 | README 删分工表，AI 参与记录改为可核验事实 | 删除 README「代码和文档是怎么分工的」整节（模块分工表与「我逐行改」表述），新建 [docs/ai-collaboration.md](ai-collaboration.md)：按事件记录问题如何暴露、对应提交哈希、原始 CSV 与报告、防回归的门，含 11-20 用例数账实缺口与 e2e PDB 门被真 apiserver 证伪两条；不写「谁写了哪一行」这类无法核验的归因。README 文末保留一行文档索引，台账顶部最后更新同步到 11-24。 |
 | 2026-11-24 | lab 归档补全信号弃权守卫的时点说明 | `86ee56f` 的 `anySignal` 守卫修掉了「全信号弃权一路缩到 min」，而 [docs/lab/README.md](lab/README.md) 的「指标全弃权（单元）」「5（集群）」两行与 `hack/lab/README.md` 表格两处描述记录的是修复前（控制器 `kubestasis:p9`）的行为。两份 README 补时点注记：当前为 `ActionNone` / `no_metrics_data`，回归门是 `TestDecide_AllSignalsAbstain_HoldsReplicas` 与 `TestDecide_PartialAbstain_StillScales`，重跑 `TestLabAbstain` 二十四轮恒为 5；历史观测数据一字未改，`exp5.sh` 脚本本身保留原样。 |
+| 2026-11-25 | 双副本选主与接管实测通过 | chart 在 `replicaCount>1` 时自动生成 PDB（`minAvailable: 1`）并在未设 `affinity` 时注入软反亲和（`preferred`，单节点集群仍可调度）；CI chart job 与 `make helm-lint` 加渲染断言（单副本不得多出 PDB、双副本必须有、`podDisruptionBudget.enabled=false` 必须生效）。新增 `hack/ha-verify.sh` 与 [ha-verification.md](ha-verification.md)：判定线先写死再采集。`docs/lab/ha-20261125-145018`：3 任 leader 各拿一次 lease，击杀 leader 两次接管 18s/17s（判定线 45s），ScaleUp 决策 4 次与期望一致、副本峰值 2、无任何采样区间两个 Pod 决策计数同时增长；失败的 `ha-20261125-144234` 保留，它暴露的是 H1 判定式与 H2 自相矛盾。残余见 §七 |
 
 ### 11.03 晚新踩的坑（已修，写进记忆）
 

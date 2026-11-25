@@ -1,0 +1,25 @@
+----- ha-kubestasis-6944578b98-dnwbj
+2026-11-25T06:43:50Z	INFO	setup	scaling & canary enabled	{"prometheus": "http://fakeprom.kubestasis-ha.svc:9090", "window": "1m"}
+2026-11-25T06:43:50Z	INFO	setup	starting KubeStasis manager
+2026-11-25T06:43:50Z	INFO	controller-runtime.metrics	Starting metrics server
+2026-11-25T06:43:50Z	INFO	controller-runtime.metrics	Serving metrics server	{"bindAddress": ":8080", "secure": false}
+2026-11-25T06:43:50Z	INFO	starting server	{"name": "health probe", "addr": "[::]:8081"}
+I1125 06:43:50.792389       1 leaderelection.go:254] attempting to acquire leader lease kubestasis-ha/kubestasis.io...
+----- ha-kubestasis-6944578b98-x6wb9
+2026-11-25T06:36:23Z	INFO	setup	scaling & canary enabled	{"prometheus": "http://fakeprom.kubestasis-ha.svc:9090", "window": "1m"}
+2026-11-25T06:36:23Z	INFO	setup	starting KubeStasis manager
+2026-11-25T06:36:23Z	INFO	controller-runtime.metrics	Starting metrics server
+2026-11-25T06:36:23Z	INFO	starting server	{"name": "health probe", "addr": "[::]:8081"}
+2026-11-25T06:36:23Z	INFO	controller-runtime.metrics	Serving metrics server	{"bindAddress": ":8080", "secure": false}
+I1125 06:36:23.064370       1 leaderelection.go:254] attempting to acquire leader lease kubestasis-ha/kubestasis.io...
+I1125 06:44:07.416793       1 leaderelection.go:268] successfully acquired lease kubestasis-ha/kubestasis.io
+2026-11-25T06:44:07Z	DEBUG	events	ha-kubestasis-6944578b98-x6wb9_8f1ca743-24c0-4826-8700-673887c020e1 became leader	{"type": "Normal", "object": {"kind":"Lease","namespace":"kubestasis-ha","name":"kubestasis.io","uid":"a39578bc-7b0d-4493-b4a4-069f3e3a3d56","apiVersion":"coordination.k8s.io/v1","resourceVersion":"713092"}, "reason": "LeaderElection"}
+2026-11-25T06:44:07Z	INFO	Starting EventSource	{"controller": "app", "controllerGroup": "kubestasis.io", "controllerKind": "App", "source": "kind source: *v1alpha1.App"}
+2026-11-25T06:44:07Z	INFO	Starting EventSource	{"controller": "app", "controllerGroup": "kubestasis.io", "controllerKind": "App", "source": "kind source: *v1.Deployment"}
+2026-11-25T06:44:07Z	INFO	Starting EventSource	{"controller": "app", "controllerGroup": "kubestasis.io", "controllerKind": "App", "source": "kind source: *v1.Service"}
+2026-11-25T06:44:07Z	INFO	Starting Controller	{"controller": "app", "controllerGroup": "kubestasis.io", "controllerKind": "App"}
+2026-11-25T06:44:07Z	INFO	Starting workers	{"controller": "app", "controllerGroup": "kubestasis.io", "controllerKind": "App", "worker count": 1}
+2026-11-25T06:44:12Z	INFO	scaled	{"controller": "app", "controllerGroup": "kubestasis.io", "controllerKind": "App", "App": {"name":"ha-app","namespace":"kubestasis-ha"}, "namespace": "kubestasis-ha", "name": "ha-app", "reconcileID": "8ed08c78-bdc2-4fe8-accf-ee8e1cccf576", "from": 1, "to": 2}
+2026-11-25T06:44:12Z	DEBUG	events	ScaleUp: 1 -> 2 (load above targets)	{"type": "Normal", "object": {"kind":"App","namespace":"kubestasis-ha","name":"ha-app","uid":"2ee936d9-2b31-4b3d-93b0-814c083d1bbf","apiVersion":"kubestasis.io/v1alpha1","resourceVersion":"713111"}, "reason": "KubeStasisScaleUp"}
+2026-11-25T06:44:12Z	INFO	conflict on write, backing off (not an error)	{"controller": "app", "controllerGroup": "kubestasis.io", "controllerKind": "App", "App": {"name":"ha-app","namespace":"kubestasis-ha"}, "namespace": "kubestasis-ha", "name": "ha-app", "reconcileID": "754f9d3b-971b-4c39-bb2f-f6c2494795c6", "op": "ensure deployment"}
+2026-11-25T06:44:24Z	DEBUG	events	app available: 2/2 replicas ready	{"type": "Normal", "object": {"kind":"App","namespace":"kubestasis-ha","name":"ha-app","uid":"2ee936d9-2b31-4b3d-93b0-814c083d1bbf","apiVersion":"kubestasis.io/v1alpha1","resourceVersion":"713187"}, "reason": "KubeStasisReconcile"}

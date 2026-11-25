@@ -108,6 +108,13 @@ REALITY = [
      r"AI 推理信号[^\n]{0,80}(尚未执行|未实测|只有单测|尚欠实测)"),
     ("docs/benchmark/vllm-inference-run-2026-11-20.md", "docs/STATUS.md",
      r"AI 推理弹性信号[^\n]{0,40}(⚠️ 未实测|未实测|尚欠实测|没有在真实)"),
+    # 2026-11-25：双副本选主与接管已在真集群跑通（docs/ha-verification.md），
+    # 两处"未验证"的表述必须一起改。正则收得很窄：STATUS 新写法里仍有
+    # "webhook 双副本准入未验证"这类成立的残余，宽匹配会误伤。
+    ("docs/lab/ha-20261125-145018/summary.txt", "docs/STATUS.md",
+     r"双副本下的选主接管[^\n]{0,30}从未实测"),
+    ("docs/lab/ha-20261125-145018/summary.txt", "README.md",
+     r"leaderElection 已开但双副本切换未验证"),
 ]
 
 for artifact, doc, pattern in REALITY:

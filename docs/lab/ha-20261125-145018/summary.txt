@@ -1,0 +1,8 @@
+PASS
+leader 序列: ha-kubestasis-6944578b98-98j6w -> ha-kubestasis-6944578b98-r8f2z -> ha-kubestasis-6944578b98-x5cbz
+孤儿 lease 区间: [17.4, 14.5] s
+接管时延: [18, 17] s（判定线 45s）
+ScaleUp 决策: 4 次 / 期望 4 次
+replicas 峰值: 2
+两 Pod 同时增长的采样区间: 0
+采样点: 34，覆盖 91s

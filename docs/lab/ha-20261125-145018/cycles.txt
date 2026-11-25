@@ -1,0 +1,6 @@
+initial=ok
+cycle=1 leader_before=ha-kubestasis-6944578b98-98j6w kill_at=1795589469000
+cycle=1 leader_after=ha-kubestasis-6944578b98-r8f2z takeover_s=18
+cycle=2 leader_before=ha-kubestasis-6944578b98-r8f2z kill_at=1795589505214
+cycle=2 leader_after=ha-kubestasis-6944578b98-x5cbz takeover_s=17
+h4_after_takeover=ok

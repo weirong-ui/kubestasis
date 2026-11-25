@@ -105,9 +105,22 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.affinity }}
+      {{- if .Values.affinity }}
       affinity:
-        {{- toYaml . | nindent 8 }}
+        {{- toYaml .Values.affinity | nindent 8 }}
+      {{- else if eq (include "kubestasis.multiReplica" .) "true" }}
+      # 多副本且用户没指定 affinity 时的默认软反亲和：两个 manager 优先不同节点。
+      # 用 preferred 而不是 required：单节点集群（kind、Docker Desktop）仍然能调度，
+      # 只是退化成同节点——此时能验证选主接管，验证不了节点级容灾。
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "kubestasis.selectorLabels" . | nindent 20 }}
       {{- end }}
       {{- with .Values.tolerations }}
       tolerations:

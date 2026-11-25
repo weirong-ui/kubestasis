@@ -1,0 +1,7 @@
+TIME                   REASON                MSG
+2026-11-25T06:50:54Z   KubeStasisScaleUp     ScaleUp: 1 -> 2 (load above targets)
+2026-11-25T06:51:05Z   KubeStasisReconcile   app available: 2/2 replicas ready
+2026-11-25T06:51:32Z   KubeStasisScaleUp     ScaleUp: 1 -> 2 (load above targets)
+2026-11-25T06:51:43Z   KubeStasisReconcile   app available: 2/2 replicas ready
+2026-11-25T06:52:07Z   KubeStasisScaleUp     ScaleUp: 1 -> 2 (load above targets)
+2026-11-25T06:52:18Z   KubeStasisReconcile   app available: 2/2 replicas ready

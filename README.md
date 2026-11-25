@@ -47,7 +47,7 @@ CI 六道门：`docs`（链接有效性）/ `build`（gofmt + vet + 149 用例 +
 | 情况 | 为什么 | 该用什么 |
 |---|---|---|
 | 团队已经在用 KEDA + Argo Rollouts | 成熟项目的组合覆盖了这里绝大多数功能，有人维护、有社区、有升级路径；换成一个自研 Operator 只增加风险 | KEDA（伸缩）+ Argo Rollouts（金丝雀/回滚）+ Kyverno 或 Gatekeeper（准入） |
-| 核心生产链路、要 SLA | 单副本 manager（leaderElection 已开但双副本切换未验证）、准入 `failurePolicy=Fail` 且证书自签、Prometheus 单点、CRD 只有 v1alpha1 无 conversion——全是已知未闭环项，见 [STATUS §七](docs/STATUS.md) | 成熟方案 + 平台团队兜底 |
+| 核心生产链路、要 SLA | 默认单副本；双副本选主与接管已实测（[ha-verification.md](docs/ha-verification.md)），但网络分区下的脑裂、节点级容灾、多节点反亲和都没验证。准入 `failurePolicy=Fail` 且证书自签、Prometheus 单点、CRD 只有 v1alpha1 无 conversion 同样还在，见 [STATUS §七](docs/STATUS.md) | 成熟方案 + 平台团队兜底 |
 | 垂直伸缩 / 有状态 / 多集群 | 明确不做，原因写在[设计权衡](#设计权衡) | VPA、对应领域的 Operator、Karmada |
 
 **它适合被看/被跑的情况**
@@ -227,6 +227,7 @@ go test ./... -cover     # 单元测试（149 用例）
 
 详细的逐条状态、已知坑、不解决的问题：[docs/STATUS.md](docs/STATUS.md)。
 AI 参与方式与缺陷的可核验记录：[docs/ai-collaboration.md](docs/ai-collaboration.md)。
+控制面双副本的选主、接管与"不重复执行"验证：[docs/ha-verification.md](docs/ha-verification.md)。
 
 ## License
 

@@ -1,0 +1,11 @@
+NAME                            READY   UP-TO-DATE   AVAILABLE   AGE   CONTAINERS   IMAGES              SELECTOR
+deployment.apps/fakeprom        1/1     1            1           14s   fakeprom     nginx:1.27-alpine   app=fakeprom
+deployment.apps/ha-kubestasis   2/2     2            2           12s   manager      kubestasis:ha1      app.kubernetes.io/instance=ha,app.kubernetes.io/name=kubestasis,control-plane=controller-manager
+
+NAME                                 READY   STATUS    RESTARTS   AGE   IP            NODE                    NOMINATED NODE   READINESS GATES
+pod/fakeprom-f4bddfc87-gksm2         1/1     Running   0          14s   10.244.0.42   desktop-control-plane   <none>           <none>
+pod/ha-kubestasis-6944578b98-98j6w   1/1     Running   0          12s   10.244.0.44   desktop-control-plane   <none>           <none>
+pod/ha-kubestasis-6944578b98-r8f2z   1/1     Running   0          12s   10.244.0.43   desktop-control-plane   <none>           <none>
+
+NAME                                       MIN AVAILABLE   MAX UNAVAILABLE   ALLOWED DISRUPTIONS   AGE
+poddisruptionbudget.policy/ha-kubestasis   1               N/A               1                     12s

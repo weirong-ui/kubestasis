@@ -51,3 +51,15 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "kubestasis.selfSignedCerts" -}}
 {{- if and .Values.webhook.enabled (not .Values.webhook.certManager.enabled) -}}true{{- end -}}
 {{- end -}}
+
+{{/* 多副本：反亲和默认值的开关 */}}
+{{- define "kubestasis.multiReplica" -}}
+{{- if gt (int .Values.replicaCount) 1 -}}true{{- end -}}
+{{- end -}}
+
+{{/* PDB 开关：多副本且没被显式关掉。
+     不能用 `| default true` 判断——Helm 的 default 把 false 也当空值，
+     --set podDisruptionBudget.enabled=false 会被吞掉，PDB 照样渲染。 */}}
+{{- define "kubestasis.pdbEnabled" -}}
+{{- if and (gt (int .Values.replicaCount) 1) (ne (toString .Values.podDisruptionBudget.enabled) "false") -}}true{{- end -}}
+{{- end -}}

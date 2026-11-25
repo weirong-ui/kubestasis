@@ -18,6 +18,7 @@ jobs:
         run: |
           set -e
           for f in README.md LICENSE docs/DESIGN.md docs/ROADMAP.md docs/STATUS.md \
+                   docs/ha-verification.md \
                    juejin/00-系列文章规划.md config/samples/app_v1alpha1_app.yaml; do
             test -f "$f" || { echo "missing: $f"; exit 1; }
             echo "ok: $f"
@@ -362,6 +363,34 @@ jobs:
           grep -q 'kind: Deployment' /tmp/default.yaml
           grep -q 'kind: ValidatingWebhookConfiguration' /tmp/webhook.yaml
           echo "rendered: $(grep -c '^kind:' /tmp/default.yaml) + $(grep -c '^kind:' /tmp/webhook.yaml) objects"
+      - name: 双副本形态必须带 PDB 与反亲和，单副本必须不带
+        run: |
+          set -e
+          # 单副本：不该凭空多出 PDB / 反亲和，否则默认安装的渲染结果会变
+          if grep -q 'kind: PodDisruptionBudget' /tmp/default.yaml; then
+            echo "FAIL: replicaCount=1 不该渲染 PDB"; exit 1
+          fi
+          if grep -q 'podAntiAffinity' /tmp/default.yaml; then
+            echo "FAIL: replicaCount=1 不该渲染反亲和"; exit 1
+          fi
+
+          helm template ks charts/kubestasis -n kubestasis-system \
+            --set replicaCount=2 > /tmp/ha.yaml
+          grep -q 'kind: PodDisruptionBudget' /tmp/ha.yaml
+          grep -q 'minAvailable: 1' /tmp/ha.yaml
+          grep -q 'podAntiAffinity' /tmp/ha.yaml
+          grep -q 'topologyKey: kubernetes.io/hostname' /tmp/ha.yaml
+          # 反亲和的 selector 必须与 Deployment 的 selector 用同一组标签，
+          # 否则算出来的"同应用副本"是空的，偏好规则永远不生效
+          test "$(grep -c 'app.kubernetes.io/instance: ks' /tmp/ha.yaml)" -ge 3
+
+          # 显式关掉 PDB：Helm 的 default 把 false 当空值，这里守住别退回去
+          helm template ks charts/kubestasis -n kubestasis-system \
+            --set replicaCount=2 --set podDisruptionBudget.enabled=false > /tmp/ha-nopdb.yaml
+          if grep -q 'kind: PodDisruptionBudget' /tmp/ha-nopdb.yaml; then
+            echo "FAIL: podDisruptionBudget.enabled=false 时仍渲染了 PDB"; exit 1
+          fi
+          echo "ok: 单副本无 PDB，双副本带 PDB+反亲和，显式关闭生效"
       - name: Chart 里的 CRD 必须与 controller-gen 产物一致
         run: |
           # 忘了同步这份副本的后果：helm 装出来的 CRD 少字段，

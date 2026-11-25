@@ -39,6 +39,14 @@ KubeStasis {{ .Chart.AppVersion }} 已安装到命名空间 {{ include "kubestas
    # 最近 10 分钟各原因码的决策分布
    sum by (action, reason) (rate(kubestasis_scaling_decisions_total[10m]))
 
+{{- if gt (int .Values.replicaCount) 1 }}
+
+   多副本形态（replicaCount={{ .Values.replicaCount }}，leaderElection={{ .Values.leaderElection }}）：
+   kubectl -n {{ include "kubestasis.namespace" . }} get lease kubestasis.io -o jsonpath='{.spec.holderIdentity}'
+   只有一个 manager 会持有 Lease，其余空转等接管。注意 /metrics 在副本之间是跳的：
+   只有 leader 的计数器在动，standby 读到的是 0。
+{{- end }}
+
 {{- if .Values.webhook.enabled }}
 
 5) Webhook 已开启：

@@ -18,6 +18,15 @@ replicaCount: 1
 # 副本数 >1 时必须为 true，否则多个 manager 会同时抢同一个 App
 leaderElection: true
 
+# 高可用配套，只在 replicaCount > 1 时生效：
+#   - PDB minAvailable: 1，节点维护驱逐时至少留一个 manager 接管
+#   - Pod 软反亲和（kubernetes.io/hostname），优先分散到不同节点；
+#     单节点集群仍能调度，此时两个副本同节点，只能验证选主不能验证节点级容灾
+# 显式关掉：--set podDisruptionBudget.enabled=false
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
 serviceAccount:
   create: true
   # 留空则用 fullname

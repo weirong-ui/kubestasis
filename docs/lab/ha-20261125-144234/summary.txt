@@ -1,0 +1,8 @@
+FAIL
+H1: 12 个采样点 holder 指向已不存在的 Pod
+leader 序列: ha-kubestasis-6944578b98-9dg6v -> ha-kubestasis-6944578b98-8h8fr -> ha-kubestasis-6944578b98-x6wb9
+接管时延: [17, 19] s（判定线 45s）
+ScaleUp 决策: 4 次 / 期望 4 次
+replicas 峰值: 2
+两 Pod 同时增长的采样区间: 0
+采样点: 38，覆盖 95s

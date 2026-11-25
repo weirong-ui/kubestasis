@@ -100,10 +100,16 @@ HELM ?= helm
 RELEASE ?= kubestasis
 CHART_NS ?= kubestasis-system
 
-helm-lint: ## 校验 Helm Chart（lint + 两种形态渲染 + CRD 副本一致）
+helm-lint: ## 校验 Helm Chart（lint + 单/双副本 + webhook 渲染 + CRD 副本一致）
 	$(HELM) lint charts/kubestasis
 	$(HELM) template $(RELEASE) charts/kubestasis -n $(CHART_NS) > /dev/null
 	$(HELM) template $(RELEASE) charts/kubestasis -n $(CHART_NS) --set webhook.enabled=true > /dev/null
+	@# 双副本形态必须有 PDB 与反亲和；单副本不许凭空多出来
+	$(HELM) template $(RELEASE) charts/kubestasis -n $(CHART_NS) --set replicaCount=2 \
+		| grep -q 'kind: PodDisruptionBudget'
+	$(HELM) template $(RELEASE) charts/kubestasis -n $(CHART_NS) --set replicaCount=2 \
+		| grep -q 'podAntiAffinity'
+	@! $(HELM) template $(RELEASE) charts/kubestasis -n $(CHART_NS) | grep -q 'kind: PodDisruptionBudget'
 	diff -u config/crd/bases/kubestasis.io_apps.yaml charts/kubestasis/crds/kubestasis.io_apps.yaml
 
 helm-install: ## Helm 安装（IMG_REPO=kubestasis IMG_TAG=p8 PROM_URL=http://... 均可选）

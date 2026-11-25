@@ -1,0 +1,19 @@
+apiVersion: v1
+items:
+- apiVersion: coordination.k8s.io/v1
+  kind: Lease
+  metadata:
+    creationTimestamp: "2026-11-25T06:36:23Z"
+    name: kubestasis.io
+    namespace: kubestasis-ha
+    resourceVersion: "713202"
+    uid: a39578bc-7b0d-4493-b4a4-069f3e3a3d56
+  spec:
+    acquireTime: "2026-11-25T06:44:07.406665Z"
+    holderIdentity: ha-kubestasis-6944578b98-x6wb9_8f1ca743-24c0-4826-8700-673887c020e1
+    leaseDurationSeconds: 15
+    leaseTransitions: 2
+    renewTime: "2026-11-25T06:44:31.493729Z"
+kind: List
+metadata:
+  resourceVersion: ""

@@ -1,0 +1,17 @@
+{{- if eq (include "kubestasis.pdbEnabled" .) "true" }}
+# 双副本选主时，节点排空（drain）会逐出 Pod。没有 PDB 的话两个副本可能被同时
+# 驱逐，控制面彻底停摆，直到新 Pod 调度起来；minAvailable: 1 保证滚动驱逐时
+# 始终留一个 manager 持有 Lease。
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "kubestasis.fullname" . }}
+  namespace: {{ include "kubestasis.namespace" . }}
+  labels:
+    {{- include "kubestasis.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "kubestasis.selectorLabels" . | nindent 6 }}
+{{- end }}

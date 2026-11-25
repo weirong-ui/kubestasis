@@ -36,6 +36,10 @@
 | 11 | 排除命名空间后非法 App 创建成功，控制器照建 3 副本；恢复准入后 App 卡在 `kubestasis.io/finalizer` | 准入是唯一防线；`failurePolicy=Fail` 会锁死删除 |
 | 12 | 加 CRD 默认值后 apply 被拒：`spec.replicas(1) 必须落在 [3, 10] 区间内` | 默认值在准入之前生效，跨字段默认不能与它共存 |
 
+> 双副本选主的实测不在 `hack/lab/exp*.sh` 里：脚本是 `hack/ha-verify.sh`，判定线写在
+> [docs/ha-verification.md](../ha-verification.md)，原始数据在 `docs/lab/ha-20261125-145018/`。
+> 那轮用的是 `kubestasis:ha1`（源码 `c076560`），不是下面这批实验的 `p9`。
+
 ## 三次预测错了，错的地方比结果有用
 
 **实验 8：不是"一次删光"。** 预测 3 个 Pod 会一起被删，实测是 1~2 个。`Diagnose`
