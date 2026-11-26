@@ -1,7 +1,7 @@
 # KubeStasis 实现状态（真实账本）
 
 > 本文件是**唯一可信的能力清单**。README 的一切对外描述以此为准，每完成一项就把状态改掉。
-> 最后更新：2026-11-25（双副本选主与接管实测通过，chart 补 PDB 与软反亲和；§七「控制面高可用」结项）
+> 最后更新：2026-11-26（README 副本-分钟结论补 run5 版本限定，文档一致性门加版本声明守卫；§七「控制面高可用」已于 11-25 结项）
 > 验收口径：代码能在干净集群上 `deploy → apply App → Available`，且有可复现的证据。
 > ⚠️ 项目原名 KubeSentry，2026-11-03 更名 KubeStasis；CRD group 于 2026-11-04 由 `apps.sentry.io` 改为 `kubestasis.io`（不再沿用第三方商标）。
 
@@ -166,6 +166,7 @@
 | 2026-11-24 | README 删分工表，AI 参与记录改为可核验事实 | 删除 README「代码和文档是怎么分工的」整节（模块分工表与「我逐行改」表述），新建 [docs/ai-collaboration.md](ai-collaboration.md)：按事件记录问题如何暴露、对应提交哈希、原始 CSV 与报告、防回归的门，含 11-20 用例数账实缺口与 e2e PDB 门被真 apiserver 证伪两条；不写「谁写了哪一行」这类无法核验的归因。README 文末保留一行文档索引，台账顶部最后更新同步到 11-24。 |
 | 2026-11-24 | lab 归档补全信号弃权守卫的时点说明 | `86ee56f` 的 `anySignal` 守卫修掉了「全信号弃权一路缩到 min」，而 [docs/lab/README.md](lab/README.md) 的「指标全弃权（单元）」「5（集群）」两行与 `hack/lab/README.md` 表格两处描述记录的是修复前（控制器 `kubestasis:p9`）的行为。两份 README 补时点注记：当前为 `ActionNone` / `no_metrics_data`，回归门是 `TestDecide_AllSignalsAbstain_HoldsReplicas` 与 `TestDecide_PartialAbstain_StillScales`，重跑 `TestLabAbstain` 二十四轮恒为 5；历史观测数据一字未改，`exp5.sh` 脚本本身保留原样。 |
 | 2026-11-25 | 双副本选主与接管实测通过 | chart 在 `replicaCount>1` 时自动生成 PDB（`minAvailable: 1`）并在未设 `affinity` 时注入软反亲和（`preferred`，单节点集群仍可调度）；CI chart job 与 `make helm-lint` 加渲染断言（单副本不得多出 PDB、双副本必须有、`podDisruptionBudget.enabled=false` 必须生效）。新增 `hack/ha-verify.sh` 与 [ha-verification.md](ha-verification.md)：判定线先写死再采集。`docs/lab/ha-20261125-145018`：3 任 leader 各拿一次 lease，击杀 leader 两次接管 18s/17s（判定线 45s），ScaleUp 决策 4 次与期望一致、副本峰值 2、无任何采样区间两个 Pod 决策计数同时增长；失败的 `ha-20261125-144234` 保留，它暴露的是 H1 判定式与 H2 自相矛盾。残余见 §七 |
+| 2026-11-26 | 首页副本-分钟结论补版本限定 | 报告开头早已写明 run5 采于 `565b0fb`（缩容稳定窗口 `1301365` 落地前），README 首屏与证据表却把 −12.5% 当现版本能力挂着。三处补版本限定（首屏、证据表、"实测 vs 原生 HPA"表格上方），`doc_consistency.py` 新增第 5 类检查：README 出现 12.5% 就必须带 `565b0fb`，报告里也必须有同一哈希；D2a 协议与重测数据一字未动 |
 
 ### 11.03 晚新踩的坑（已修，写进记忆）
 

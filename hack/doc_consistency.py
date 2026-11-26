@@ -185,10 +185,27 @@ if STATUS_DOC.exists():
                 f"但台账里已有 {max(ledger_dates)} 的记录"
             )
 
+# ---------- 5. 副本-分钟结论必须带版本声明 ----------
+# 起因（2026-11-26 外部评审）：报告开头写明 run5 采于 565b0fb、缩容稳定窗口落地之前，
+# README 首屏却把 −12.5% 当"最稳的一个数"挂着，没说它来自旧代码。读者会把它读成
+# 当前 main 的能力。REALITY 管的是"产物已存在就不许说没做"，管不了"数字还在、
+# 依据已经漂了"，所以单独查：首页出现这个数就必须带哈希，且报告里得有同一处声明。
+
+README_DOC = ROOT / "README.md"
+if README_DOC.exists():
+    readme_text = README_DOC.read_text(encoding="utf-8")
+    has_number = re.search(r"12\.5\s*%", readme_text)
+    has_version = "565b0fb" in readme_text
+    if has_number and not has_version:
+        errors.append("README.md 写了副本-分钟 −12.5%，却没有 run5 的版本声明（565b0fb）")
+    if has_version and BENCH_DOC.exists():
+        if "565b0fb" not in BENCH_DOC.read_text(encoding="utf-8"):
+            errors.append("README.md 引用了 565b0fb，但压测报告的版本声明里没有这个哈希")
+
 if errors:
     print("文档一致性检查失败：")
     for e in errors:
         print("  -", e)
     sys.exit(1)
 
-print(f"文档一致：用例数 {badge}（{len(claims)} 处声明），现实断言 {len(REALITY)} 条，台账日期单调，归档链接可点")
+print(f"文档一致：用例数 {badge}（{len(claims)} 处声明），现实断言 {len(REALITY)} 条，台账日期单调，归档链接可点，版本声明已核对")

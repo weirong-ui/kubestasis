@@ -16,7 +16,7 @@ make deploy-webhook IMG=kubestasis:dev
 kubectl apply -f config/samples/app_v1alpha1_app.yaml
 ```
 
-**最稳的一个数**：同镜像、同资源、同流量时间线对比原生 HPA，全程副本-分钟 63.7 vs 72.8（−12.5%），原始 CSV 可复算。这是两臂各跑一次的单次对比，重复实验的判定线在开跑之前就写死了，跑完回来改这个数。扩容响应那次只有 n=1，不写进首页，理由和废轮记录在[报告](docs/benchmark/hpa-vs-kubestasis.md)里。
+**最稳的一个数（有版本限定）**：同镜像、同资源、同流量时间线对比原生 HPA，全程副本-分钟 63.7 vs 72.8（−12.5%），原始 CSV 可复算。**这批数据采于 commit `565b0fb`，在缩容稳定窗口（`1301365`）落地之前**；当前 main 的缩容时序已变，误缩容不再出现、回到 1 副本更慢，副本-分钟优势预期缩小。这个数只代表那次运行，不代表当前代码，完整口径见报告开头的版本声明。这是两臂各跑一次的单次对比，重复实验的判定线在开跑之前就写死了，跑完回来改这个数。扩容响应那次只有 n=1，不写进首页，理由和废轮记录在[报告](docs/benchmark/hpa-vs-kubestasis.md)里。
 
 **定位**：不是 HPA 替代品，也不打算被生产采用。它是一个把"看指标伸缩 + 看故障自愈 + 准入期兜住错误配置"放进同一个控制回路的实现研究，每条能力附可复算的证据和失败记录。什么时候该用、什么时候不该用，见下一节。
 
@@ -31,7 +31,7 @@ kubectl apply -f config/samples/app_v1alpha1_app.yaml
 |---|---|
 | 按 QPS 伸缩 | [500 QPS 打流 → 1→5 副本；停流后渐进缩回 1](docs/demo/01-scaling.md)（集群内真 Prometheus 按 Pod 抓取） |
 | 分级自愈 | [crash 版本发布 → L2 摘除 → L3 按 ReplicaSet 回滚](docs/demo/02-self-healing.md)（CI 里有同链路回归断言） |
-| vs 原生 HPA | [同镜像、同资源、同流量时间线的压测对比](docs/benchmark/hpa-vs-kubestasis.md)（副本-分钟 −12.5%；扩容响应的方差问题、五轮废数据的逐轮归因、输掉的两项都写在里面；原始 CSV 可复算；重复实验的判定线在跑之前就写死了（[协议](docs/benchmark/d2a-protocol.md)），跑完回来改数） |
+| vs 原生 HPA | [同镜像、同资源、同流量时间线的压测对比](docs/benchmark/hpa-vs-kubestasis.md)（副本-分钟 −12.5%，采于 `565b0fb`、缩容稳定窗口落地前，不代表当前 main；扩容响应的方差问题、五轮废数据的逐轮归因、输掉的两项都写在里面；原始 CSV 可复算；重复实验的判定线在跑之前就写死了（[协议](docs/benchmark/d2a-protocol.md)），跑完回来改数） |
 | 可观测性 | [Grafana 面板实测截图](deploy/monitoring/README.md)——4 行 16 个面板，含一次真实的 2→1→2（稳定窗口挡缩容、到点缩、再扩）；同目录还有录制规则与"伸缩引擎休眠"告警 |
 | AI 推理信号 | [实测记录](docs/benchmark/vllm-inference-run-2026-11-20.md)：真实 vLLM + 单卡 T4 上 QueueDepth 244 / TTFT p95 76s 越线，副本 `1 → 3 → 2 → 1`；补跑单信号隔离让 KVCacheUsage 峰值 1.000 越线、独立触发 `1 → 2 → 3`。三条信号各自在真指标上触发过决策（非同一轮同时越线）。n=1，扩出的副本不承接流量，不是端到端弹性 |
 | 全部能力/限制/踩坑 | [docs/STATUS.md](docs/STATUS.md)（唯一可信账本，含"已知不解决的问题"） |
@@ -102,6 +102,8 @@ spec:
 
 同一镜像（每请求 8ms CPU 忙等）、同一资源（250m/500m）、同一副本区间（1–5），同样的突发流量时间线；唯一变量是伸缩器。
 HPA 用 CPU 50%（全默认行为），KubeStasis 用 QPS 16/Pod（默认迟滞 10% + 冷却 120s + 渐进缩容 20%）。
+
+> **版本限定**：下表复算的是 run5（commit `565b0fb`）那次运行，采于缩容稳定窗口（`1301365`）落地之前。当前 main 不再有突发#2 起点的误缩容，回到 1 副本也更慢，副本-分钟优势预期缩小。完整说明见[报告开头的版本声明](docs/benchmark/hpa-vs-kubestasis.md)。
 
 <!-- BENCH_TABLE -->
 | 指标 | 原生 HPA | KubeStasis |
